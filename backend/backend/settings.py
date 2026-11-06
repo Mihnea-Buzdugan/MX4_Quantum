@@ -1,11 +1,13 @@
-
 """
 Django settings for backend project.
 """
 
 import os
-from dotenv import load_dotenv
+from datetime import timedelta
 from pathlib import Path
+
+from dotenv import load_dotenv
+
 load_dotenv()
 
 # --------------------------------------------------
@@ -14,7 +16,10 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-q*a$r(cg12q45buo)=l4g+p&^(p1hwx5%btwta!(7slz!e3k)z'
+# SECRET_KEY also signs the JWTs, so it must be private and loaded from the
+# environment. Generate one with:
+#   python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
+SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 
 DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in {
     "true", "1", "yes", "on"
@@ -25,6 +30,7 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "backend",
     ".ngrok-free.dev",
+    "mx4.local",
 ]
 
 
@@ -36,22 +42,20 @@ ALLOWED_HOSTS = [
 # Make sure Nginx sets X-Forwarded-Proto correctly.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-CSRF_COOKIE_NAME = "csrftoken"
-CSRF_COOKIE_HTTPONLY = False
+# The API authenticates with JWTs in the Authorization header, so the API
+# itself no longer depends on cookies or CSRF tokens. Sessions and CSRF are
+# kept ONLY for the Django admin (/admin/).
 CSRF_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
-
-SESSION_COOKIE_NAME = "session"
-SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG
-SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
-SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
+# Origins the Django admin may be served from / posted from.
 CSRF_TRUSTED_ORIGINS = [
     "https://glitter-setback-dares.ngrok-free.dev",
     "http://localhost:5173",
     "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://mx4.local:8080",
+    "http://backend",
 ]
 
 
@@ -59,13 +63,18 @@ CSRF_TRUSTED_ORIGINS = [
 # CORS
 # --------------------------------------------------
 
-CORS_ALLOW_CREDENTIALS = True
+# No cookies are sent cross-origin anymore; the token travels in the
+# Authorization header ("authorization" is allowed by default in
+# django-cors-headers).
+CORS_ALLOW_CREDENTIALS = False
 
 CORS_ALLOWED_ORIGINS = [
     "https://glitter-setback-dares.ngrok-free.dev",
     "http://localhost:5173",
     "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://mx4.local:8080",
+    "http://backend",
 ]
 
 
@@ -85,6 +94,8 @@ INSTALLED_APPS = [
 
     # Third-party
     "corsheaders",
+    "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",  # lets logout revoke refresh tokens
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -108,7 +119,7 @@ MIDDLEWARE = [
     # CORS
     "corsheaders.middleware.CorsMiddleware",
 
-    # Django middleware
+    # Django middleware (session + CSRF are still needed by the admin)
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -157,6 +168,26 @@ ACCOUNT_EMAIL_VERIFICATION = "optional"
 LOGIN_URL = "/api/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
+
+
+# --------------------------------------------------
+# DJANGO REST FRAMEWORK + JWT
+# --------------------------------------------------
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(hours=6),  # same as the old session length
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
 
 
 # --------------------------------------------------
