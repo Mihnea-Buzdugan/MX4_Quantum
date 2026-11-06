@@ -1,122 +1,123 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { Suspense, useEffect, useState } from 'react';
+import { Routes, Route, useNavigate, Navigate, Outlet } from 'react-router-dom';
+import Loading from './components/Loading';
+import './App.css';
+import ScrollToTop from "./components/ScrollToTop";
+import { authFetch, isLoggedIn, logout } from './utils/auth';
+
+
+const Index = React.lazy(() => import('./pages/Index'));
+const SignUp = React.lazy(() => import('./pages/Authentification/SignUp.jsx'));
+const Login = React.lazy(() => import('./pages/Authentification/Login.jsx'));
 
 function App() {
-  const [count, setCount] = useState(0)
+    const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    // Returns the promise so Login/SignUp can `await` it before the UI re-renders.
+    const fetchUser = () => {
+        // No valid session stored: skip the request, the route guard sends us to /login.
+        if (!isLoggedIn()) {
+            setUser(null);
+            setLoading(false);
+            return Promise.resolve();
+        }
 
-      <div className="ticks"></div>
+        return authFetch('/api/user/')
+            .then(response => {
+                if (!response.ok) throw new Error("Unauthorized");
+                return response.json();
+            })
+            .then(data => {
+                const userData = data.user || data;
+                if (userData && userData.id) {
+                    setUser(userData);
+                }
+            })
+            .catch(() => setUser(null))
+            .finally(() => setLoading(false));
+    };
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+    useEffect(() => {
+        fetchUser();
+    }, []);
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    const handleLogout = () => {
+        logout();      // clears tokens right away and revokes the refresh token in the background
+        setUser(null); // the route guard then redirects to /login
+    };
+
+    if (loading) return <Loading />;
+
+
+    if (user && user.is_banned) {
+        return (
+            <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-center px-4">
+                <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full border-t-4 border-red-500">
+                    <h1 className="text-3xl font-bold text-gray-800 mb-4">Account Suspended</h1>
+                    <p className="text-gray-600 mb-4">
+                        Your access to this application has been temporarily restricted due to a violation of our terms.
+                    </p>
+
+                    {user.banned_until && (() => {
+                        const date = new Date(user.banned_until);
+                        const day = String(date.getDate()).padStart(2, "0");
+                        const month = String(date.getMonth() + 1).padStart(2, "0");
+                        const year = date.getFullYear();
+                        const hours = String(date.getHours()).padStart(2, "0");
+                        const minutes = String(date.getMinutes()).padStart(2, "0");
+
+                        return (
+                            <div className="bg-red-50 p-3 rounded text-red-700 font-medium mb-6">
+                                Ban lifts on: {`${day}.${month}.${year} ${hours}:${minutes}`}
+                            </div>
+                        );
+                    })()}
+
+                    <button
+                        type="button"
+                        onClick={() => {
+                            logout(); // revokes the refresh token and clears stored tokens
+                            setUser(null);
+                            navigate('/login');
+                        }}
+                        className="text-blue-600 hover:underline"
+                    >
+                        Return to Login
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+
+    return (
+        <div className="min-h-screen bg-white">
+
+            <Suspense fallback={<Loading />}>
+                <ScrollToTop />
+                <Routes>
+                    {/* Once fetchUser() sets the user after a successful login/signup,
+                        these routes redirect to "/" automatically. */}
+                    <Route
+                        path="/login"
+                        element={user ? <Navigate to="/" replace /> : <Login onLoginSuccess={fetchUser} />}
+                    />
+                    <Route
+                        path="/signup"
+                        element={user ? <Navigate to="/" replace /> : <SignUp onLoginSuccess={fetchUser} />}
+                    />
+
+                    <Route element={user ? <Outlet /> : <Navigate to="/login" replace />}>
+                        <Route path="/" element={<Index user={user} onLogout={handleLogout} />} />
+                    </Route>
+
+                    <Route path="*" element={<Navigate to="/" />} />
+                </Routes>
+            </Suspense>
+        </div>
+    );
 }
 
-export default App
+export default App;

@@ -1,0 +1,167 @@
+.container {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    text-align: center;
+    color: var(--color-text);
+}
+
+.title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--color-text-strong);
+    margin-bottom: 12px;
+}
+
+.description {
+    color: var(--color-text-subtle);
+    line-height: 1.6;
+    margin-bottom: 24px;
+}
+
+.buttonGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.button {
+    width: 100%;
+    padding: 13px 20px;
+
+    border: none;
+    border-radius: var(--radius-lg);
+
+    background: var(--color-primary);
+    color: var(--color-text-on-primary);
+
+    font-size: 15px;
+    font-weight: 600;
+
+    cursor: pointer;
+
+    box-shadow: var(--shadow-sm);
+    transition: var(--transition-base);
+}
+
+.button:hover {
+    background: var(--color-primary-dark);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.button:active {
+    transform: translateY(0);
+}
+
+.secondaryButton {
+    background: var(--color-secondary);
+}
+
+.secondaryButton:hover {
+    background: var(--color-secondary-dark);
+}
+
+.skipButton {
+    background: transparent;
+    color: var(--color-text-subtle);
+    box-shadow: none;
+    opacity: 0.7;
+}
+
+.skipButton:hover {
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+    opacity: 1;
+}
+
+
+/* QR sections */
+
+.content {
+    margin-top: 28px;
+}
+
+.qrContainer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+
+    padding: 24px;
+
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+
+    border-radius: var(--radius-xl);
+
+    box-shadow: var(--shadow-md);
+}
+
+.qrContainer svg {
+    padding: 12px;
+
+    background: white;
+
+    border-radius: var(--radius-md);
+
+    box-shadow: var(--shadow-sm);
+}
+
+.scanner {
+    width: 100%;
+    min-height: 300px;
+
+    overflow: hidden;
+
+    border-radius: var(--radius-xl);
+
+    background: var(--color-surface);
+
+    border: 1px solid var(--color-secondary-border);
+
+    box-shadow: var(--shadow-md);
+}
+
+
+/* Status messages */
+
+.status {
+    margin-top: 16px;
+
+    font-size: 15px;
+    font-weight: 500;
+
+    color: var(--color-text-medium);
+}
+
+.success {
+    margin-top: 16px;
+
+    padding: 12px 16px;
+
+    border-radius: var(--radius-lg);
+
+    background: var(--color-success-bg);
+    border: 1px solid var(--color-success-border);
+
+    color: var(--color-success);
+
+    font-weight: 600;
+}
+
+.error {
+    margin-top: 16px;
+
+    padding: 12px 16px;
+
+    border-radius: var(--radius-lg);
+
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+
+    color: var(--color-danger-dark);
+
+    font-weight: 500;
+}
