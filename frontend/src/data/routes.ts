@@ -22,14 +22,14 @@ export type DestinationGoal = {
 export const startingBudget = 7
 
 export const cities: RailCity[] = [
-  { name: 'Iași', shortName: 'IAS', x: 670, y: 150 },
-  { name: 'București', shortName: 'BUC', x: 468, y: 354 },
-  { name: 'Cluj-Napoca', shortName: 'CLJ', x: 280, y: 157 },
-  { name: 'Timișoara', shortName: 'TIM', x: 124, y: 270 },
-  { name: 'Brașov', shortName: 'BRA', x: 444, y: 264 },
-  { name: 'Sibiu', shortName: 'SIB', x: 350, y: 258 },
-  { name: 'Craiova', shortName: 'CRA', x: 343, y: 358 },
-  { name: 'Constanța', shortName: 'CST', x: 615, y: 405 },
+  { name: 'Iași', shortName: 'IAS', x: 587, y: 140 },
+  { name: 'București', shortName: 'BUC', x: 482, y: 345 },
+  { name: 'Cluj-Napoca', shortName: 'CLJ', x: 308, y: 169 },
+  { name: 'Timișoara', shortName: 'TIM', x: 139, y: 245 },
+  { name: 'Brașov', shortName: 'BRA', x: 446, y: 253 },
+  { name: 'Sibiu', shortName: 'SIB', x: 343, y: 242 },
+  { name: 'Craiova', shortName: 'CRA', x: 320, y: 352 },
+  { name: 'Constanța', shortName: 'CST', x: 659, y: 365 },
 ]
 
 export const destinationGoals: DestinationGoal[] = [
@@ -67,3 +67,23 @@ export const modelEvaluations: ModelEvaluation[] = [
   { plan: '11100', energy: '-15.0', constructionCost: 7, budgetStatus: 'Matches Budget', score: 15, label: 'Best Valid Plan' },
   { plan: '10110', energy: '-17.3', constructionCost: 8, budgetStatus: 'Exceeds Budget', score: 18, label: 'Lowest Model Energy' },
 ]
+
+export function bestPlanWithinBudget(availableRoutes: RailRoute[], budget: number): RailRoute[] {
+  let best: RailRoute[] = []
+  let bestScore = 0
+  let bestCost = 0
+
+  for (let mask = 1; mask < 1 << availableRoutes.length; mask += 1) {
+    const candidate = availableRoutes.filter((_, index) => (mask & (1 << index)) !== 0)
+    const cost = candidate.reduce((sum, route) => sum + route.constructionCost, 0)
+    if (cost > budget) continue
+    const score = candidate.reduce((sum, route) => sum + route.value, 0)
+    if (score > bestScore || (score === bestScore && cost < bestCost)) {
+      best = candidate
+      bestScore = score
+      bestCost = cost
+    }
+  }
+
+  return best
+}

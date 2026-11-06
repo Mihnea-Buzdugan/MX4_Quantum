@@ -110,8 +110,9 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .map-coordinate { position: absolute; z-index: 1; color: rgba(132,157,177,.32); font: 8px/1 ui-monospace, monospace; }
 .coordinate-top { top: 13px; left: 13px; }.coordinate-bottom { bottom: 13px; left: 13px; }
 .network-svg { position: absolute; inset: 2% 2% 1%; width: 96%; height: 97%; overflow: visible; transition: transform .2s ease; transform-origin: center; }
-.country-outline { fill: rgba(15,47,63,.24); stroke: rgba(68,131,153,.25); stroke-width: 1; }
-.county-outline { fill: none; stroke: rgba(80,125,144,.12); stroke-width: 1; }
+.country-outline { fill: rgba(15,47,63,.42); stroke: rgba(68,153,170,.45); stroke-width: 1.5; stroke-linejoin: round; filter: drop-shadow(0 0 12px rgba(13,112,131,.11)); }
+.country-relief { fill: none; stroke: rgba(80,150,166,.14); stroke-width: 1.1; stroke-dasharray: 3 4; stroke-linecap: round; }
+.country-river { fill: none; stroke: rgba(18,176,195,.21); stroke-width: 2; stroke-linecap: round; }
 .rail-line { stroke: rgba(92,137,158,.43); stroke-width: 1.5; stroke-dasharray: 4 5; }
 .rail-line-selected { stroke: rgba(15,210,226,.52); stroke-width: 2.2; stroke-dasharray: 0; }
 .route-line-glow { fill: none; stroke: url(#route-glow); stroke-width: 3; stroke-linecap: round; filter: url(#soft-glow); }
@@ -128,6 +129,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .map-legend > span { display: flex; align-items: center; gap: 5px; }
 .legend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
 .legend-cyan { background: var(--cyan); box-shadow: 0 0 7px rgba(18,214,229,.65); }.legend-muted { background: #678194; }
+.legend-evaluating { background: var(--amber); box-shadow: 0 0 7px rgba(231,185,104,.65); }
 .legend-train { display: inline-grid; place-items: center; width: 13px; height: 8px; border-radius: 3px; background: var(--cyan); }
 .mini-train { display: flex; gap: 2px; }.mini-train i { width: 1px; height: 3px; background: #003039; }
 .map-controls { position: absolute; top: 11px; right: 11px; display: grid; overflow: hidden; border: 1px solid rgba(96,127,148,.22); border-radius: 5px; background: rgba(11,21,34,.84); }
@@ -308,6 +310,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .route-index { color: #62758a; font: 8px/1 ui-monospace, monospace; }.route-endpoints { display: flex; min-width: 0; align-items: center; gap: 5px; }.route-endpoints strong { overflow: hidden; color: #b6c4d0; font-size: 9px; font-weight: 530; text-overflow: ellipsis; white-space: nowrap; }.construction-route-built .route-endpoints strong { color: #d7faff; }.route-endpoints svg { flex: 0 0 auto; color: #73869a; }
 .route-construction-cost, .route-value { display: grid; justify-items: end; gap: 3px; }.route-construction-cost small, .route-value small { color: #6f8092; font-size: 6px; font-weight: 650; letter-spacing: .04em; white-space: nowrap; }.route-construction-cost strong { color: #d3c08f; font-size: 10px; font-weight: 600; }.route-value strong { color: #72dcbb; font-size: 10px; font-weight: 600; }
 .route-list-footer { display: flex; min-height: 37px; align-items: center; justify-content: space-between; gap: 8px; color: #728397; font-size: 8px; }.clear-plan-button { border: 0; padding: 5px; color: #93a6b8; background: transparent; font-size: 8px; cursor: pointer; }.clear-plan-button:hover:not(:disabled) { color: var(--cyan); }.clear-plan-button:disabled { color: #526276; cursor: default; }
+.rail-line-evaluating { stroke: var(--amber); stroke-width: 3; stroke-dasharray: 5 3; filter: drop-shadow(0 0 4px rgba(231,185,104,.65)); animation: route-evaluation-pulse 1s ease-in-out infinite alternate; }
+@keyframes route-evaluation-pulse { from { opacity: .55; } to { opacity: 1; } }
 .destination-goals-panel { margin-top: 13px; padding: 14px 15px; scroll-margin-top: 70px; }.destination-goals-panel .panel-heading p { margin-left: 29px; }
 .destination-goals { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; margin-top: 12px; }.destination-goal { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid rgba(115,140,164,.12); border-radius: 6px; padding: 10px; background: rgba(255,255,255,.015); }.goal-route { display: flex; min-width: 0; align-items: center; gap: 7px; }.goal-route strong { overflow: hidden; color: #c8d6e1; font-size: 9px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }.goal-route svg { flex: 0 0 auto; color: #8494a6; }.goal-reward { display: grid; flex: 0 0 auto; justify-items: end; gap: 3px; }.goal-reward small { color: #718397; font-size: 6px; font-weight: 650; letter-spacing: .06em; }.goal-reward strong { color: #b4a3ff; font-size: 11px; font-weight: 650; }
 .model-evaluation-panel { margin-top: 13px; padding: 16px; scroll-margin-top: 70px; }.model-demo-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }.model-demo-header h2 { margin: 8px 0 5px; color: #e6eef5; font-size: 15px; font-weight: 590; letter-spacing: -.025em; }.model-demo-header p { max-width: 620px; margin: 0; color: #8293a5; font-size: 9px; line-height: 1.6; }.model-tag { flex: 0 0 auto; border: 1px solid rgba(156,139,255,.2); border-radius: 4px; padding: 6px 8px; color: #b2a7f6; background: rgba(156,139,255,.06); font-size: 7px; font-weight: 650; letter-spacing: .06em; }
@@ -333,4 +337,37 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .construction-route { grid-template-columns: 25px 14px minmax(0,1fr) 43px 34px; gap: 4px; }
   .route-toggle { width: 23px; }.construction-route-built .route-toggle i { transform: translateX(8px); }
   .route-index { font-size: 7px; }.route-endpoints strong { font-size: 7px; }.route-construction-cost strong, .route-value strong { font-size: 9px; }
+}
+.algorithm-route-panel { display: flex; min-height: 0; flex-direction: column; }
+.algorithm-route-panel .builder-heading { flex: 0 0 auto; }
+.algorithm-route-panel .builder-heading p { margin-left: 29px; }
+.algorithm-route-list { flex: 1 1 auto; max-height: clamp(310px, 33vw, 430px); }
+.algorithm-route { grid-template-columns: 19px minmax(0,1fr) 34px 36px 62px; gap: 5px; cursor: default; }
+.algorithm-route:hover { background: transparent; }
+.algorithm-route-built { background: rgba(18,214,229,.045); }
+.algorithm-route-evaluating { background: rgba(231,185,104,.045); }
+.algorithm-route .route-endpoints { gap: 4px; }
+.algorithm-route .route-endpoints strong { font-size: 8px; }
+.algorithm-route .route-construction-cost small, .algorithm-route .route-value small { font-size: 6px; }
+.algorithm-route-status { justify-self: end; border: 1px solid transparent; border-radius: 4px; padding: 4px 5px; color: #74869a; font-size: 7px; line-height: 1; }
+.algorithm-route-status.selected { border-color: rgba(18,214,229,.2); color: #8ceaf0; background: rgba(18,214,229,.07); }
+.algorithm-route-status.evaluating { border-color: rgba(231,185,104,.24); color: #e7c47f; background: rgba(231,185,104,.08); }
+.algorithm-route-status.skipped { color: #8998a7; }
+.algorithm-route-status.queued { color: #586b80; }
+.algorithm-run-state { display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(231,185,104,.2); border-radius: 4px; padding: 5px 7px; color: #d7b76d; background: rgba(231,185,104,.06); font-size: 7px; white-space: nowrap; }
+.algorithm-run-state.running svg { animation: algorithm-spin 1.2s linear infinite; }
+.algorithm-run-state.complete { border-color: rgba(65,214,160,.2); color: #68d9a8; background: rgba(65,214,160,.06); }
+@keyframes algorithm-spin { to { transform: rotate(360deg); } }
+.algorithm-list-footer { min-height: 37px; border-top: 1px solid rgba(115,140,164,.1); }
+@media (max-width: 650px) {
+  .algorithm-route { grid-template-columns: 17px minmax(0,1fr) 30px 32px 57px; gap: 4px; }
+  .algorithm-route .route-endpoints strong { font-size: 7px; }
+  .algorithm-route-status { padding: 4px 3px; font-size: 6px; }
+  .algorithm-list-footer { font-size: 7px; }
+  .network-panel .map-legend { gap: 8px; font-size: 7px; }
+}
+@media (max-width: 400px) {
+  .algorithm-route { grid-template-columns: 14px minmax(0,1fr) 24px 28px 51px; gap: 3px; }
+  .algorithm-route .route-construction-cost small, .algorithm-route .route-value small { font-size: 5px; }
+  .algorithm-route-status { font-size: 5px; }
 }

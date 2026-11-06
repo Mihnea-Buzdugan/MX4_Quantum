@@ -4,9 +4,10 @@ import { cities, routes } from '../data/routes'
 
 type Props = {
   builtRouteIds: string[]
+  evaluatingRouteIds?: string[]
 }
 
-export default function NetworkDiagram({ builtRouteIds }: Props) {
+export default function NetworkDiagram({ builtRouteIds, evaluatingRouteIds = [] }: Props) {
   const [selectedCity, setSelectedCity] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const selected = cities.find((city) => city.name === selectedCity)
@@ -28,12 +29,14 @@ export default function NetworkDiagram({ builtRouteIds }: Props) {
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
-        <path className="country-outline" d="M92 235 L108 190 139 177 155 140 196 132 221 112 274 116 301 94 340 111 377 99 410 117 452 102 487 121 520 111 545 132 590 134 612 160 659 166 680 201 667 235 689 259 675 294 646 315 640 350 612 367 603 399 567 417 531 408 507 437 475 424 451 399 424 414 397 395 369 403 345 380 311 388 291 366 259 367 243 345 214 341 202 313 171 311 155 286 126 280 120 253 Z" />
-        <path className="county-outline" d="M245 128 L257 365 M300 101 L311 386 M365 105 L369 401 M433 109 L424 408 M500 117 L475 421 M568 137 L531 408 M139 184 L661 190 M119 246 L683 252 M159 300 L649 307 M201 339 L604 360" />
+        <path className="country-outline" d="M244.3 85.3 L274.6 69.3 L317.9 77.6 L362.7 77.9 L395.2 96.2 L419.1 84.7 L470.8 77.5 L488.4 59.9 L518 59.9 L539.3 67.3 L561 89.5 L583.2 121.1 L623.6 165.7 L625.8 198.6 L618.4 230.7 L630.9 264.9 L662.2 278.7 L695.1 266.6 L726.8 279.5 L728.5 298.8 L694.5 315 L673.3 308 L653.7 398.4 L612.5 390.6 L561.6 363.3 L479.2 380.7 L444.4 399.9 L341.6 395.9 L287.9 384.2 L260.7 389.7 L240.6 358.9 L227.8 345.8 L244 333.1 L226.7 323.8 L204.8 340.6 L163.9 318.8 L158.4 287.9 L115.8 270.3 L108 246.4 L70 216.9 L126.1 202.8 L168.5 151.9 L201.6 101.1 Z" />
+        <path className="country-relief" d="M180 248 C225 211 249 158 305 154 C352 150 371 197 412 201 C455 205 465 166 511 162 C544 159 559 185 591 202 M218 288 C265 263 296 220 341 215 C379 211 393 246 429 247 C470 248 496 214 534 222 C566 229 578 257 609 273" />
+        <path className="country-river" d="M112 278 C181 298 238 330 302 345 C368 361 433 354 493 367 C545 378 590 375 652 392" />
         {routes.map((route) => {
           const a = cities.find((city) => city.name === route.from)!
           const b = cities.find((city) => city.name === route.to)!
           const isSelected = builtRouteIds.includes(route.id)
+          const isEvaluating = evaluatingRouteIds.includes(route.id)
           return (
             <line
               key={route.id}
@@ -41,7 +44,8 @@ export default function NetworkDiagram({ builtRouteIds }: Props) {
               y1={a.y}
               x2={b.x}
               y2={b.y}
-              className={isSelected ? 'rail-line rail-line-selected' : 'rail-line'}
+              className={`rail-line ${isSelected ? 'rail-line-selected' : ''} ${isEvaluating ? 'rail-line-evaluating' : ''}`}
+              aria-label={`${route.from} to ${route.to}${isSelected ? ', selected by algorithm' : isEvaluating ? ', being evaluated' : ''}`}
             />
           )
         })}
@@ -72,8 +76,9 @@ export default function NetworkDiagram({ builtRouteIds }: Props) {
         </div>
       )}
       <div className="map-legend">
-        <span><i className="legend-dot legend-cyan" /> Built connection</span>
-        <span><i className="legend-dot legend-muted" /> Available connection</span>
+        <span><i className="legend-dot legend-cyan" /> Algorithm selected</span>
+        <span><i className="legend-dot legend-evaluating" /> Evaluating</span>
+        <span><i className="legend-dot legend-muted" /> Not selected</span>
       </div>
       <div className="map-controls">
         <button onClick={() => setZoom((value) => Math.min(1.25, value + .08))} aria-label="Zoom in"><Plus size={15} /></button>

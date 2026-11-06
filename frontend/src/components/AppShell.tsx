@@ -1,28 +1,28 @@
 import { useState } from 'react'
-import { Link, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Activity,
   Bell,
   ChevronDown,
   CircleCheck,
-  Construction,
-  LayoutDashboard,
+  Cpu,
+  Orbit,
   Menu,
-  Target,
   TrainFront,
   X,
 } from 'lucide-react'
 
 const navigation = [
-  { label: 'Construction plan', to: '#route-builder', icon: Construction },
-  { label: 'Network overview', to: '#network-map', icon: LayoutDashboard },
-  { label: 'Destination goals', to: '#destination-goals', icon: Target },
-  { label: 'Model evaluation', to: '#model-evaluation', icon: Activity },
+  { label: 'Quantum Algorithm', to: '/quantum-algorithm', icon: Orbit },
+  { label: 'Classic Algorithm', to: '/classic-algorithm', icon: Cpu },
 ]
 
 export default function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const location = useLocation()
+  const isQuantum = location.pathname !== '/classic-algorithm'
+  const algorithmName = isQuantum ? 'Quantum Algorithm' : 'Classic Algorithm'
 
   return (
     <div className="app-shell">
@@ -47,25 +47,28 @@ export default function AppShell() {
 
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="sidebar-nav" aria-label="Main navigation">
-          {navigation.map(({ label, to, icon: Icon }, index) => (
-            <a key={to} href={to} className={`nav-link ${index === 0 ? 'nav-link-active' : ''}`} onClick={() => setSidebarOpen(false)}>
+          {navigation.map(({ label, to, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) => `nav-link ${isActive ? 'nav-link-active' : ''}`}
+              onClick={() => setSidebarOpen(false)}
+            >
               <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
-              {index === 0 && <span className="nav-live-dot" />}
-            </a>
+              {location.pathname === to && <span className="nav-live-dot" />}
+            </NavLink>
           ))}
         </nav>
 
-        <div className="sidebar-section-label network-label">PLAN STATUS</div>
+        <div className="sidebar-section-label network-label">ALGORITHM STATUS</div>
         <div className="network-health">
           <CircleCheck size={14} className="sidebar-plan-icon" />
-          <span>Construction planner</span>
-          <span className="health-status">READY</span>
+          <span>{algorithmName}</span>
+          <span className="health-status">SIM</span>
         </div>
         <div className="sidebar-bottom">
-          <a className="help-link" href="#model-evaluation">
-            <Activity size={16} /> Model evaluation <span>↗</span>
-          </a>
+          <div className="help-link"><Activity size={16} /> Route evaluation <span>↗</span></div>
           <div className="user-card">
             <div className="avatar">QR</div>
             <div className="user-meta"><strong>Railway Planner</strong><span>Network design</span></div>
@@ -80,15 +83,15 @@ export default function AppShell() {
             <button className="icon-button menu-button" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
               <Menu size={19} />
             </button>
-            <div className="breadcrumb"><span>Workspace</span><i>/</i><strong>Construction planning</strong></div>
+            <div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{algorithmName}</strong></div>
           </div>
           <div className="topbar-actions">
-            <div className="system-status"><span className="health-indicator" /> Plan workspace ready</div>
+            <div className="system-status"><span className="health-indicator" /> {algorithmName} ready</div>
             <div className="topbar-popover-wrap">
               <button className="icon-button notification-button" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}>
                 <Bell size={17} /><span className="notification-dot" />
               </button>
-              {notificationsOpen && <div className="notification-popover" role="status"><strong>Planning workspace</strong><span>Choose routes to build your network.</span><small>Construction budget: 7 units.</small></div>}
+              {notificationsOpen && <div className="notification-popover" role="status"><strong>{algorithmName}</strong><span>Routes are selected automatically during evaluation.</span><small>Construction budget: 7 units.</small></div>}
             </div>
             <Link to="/login" className="topbar-avatar" aria-label="Open sign in page">MB</Link>
           </div>
