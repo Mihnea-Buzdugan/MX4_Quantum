@@ -25,6 +25,8 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "backend",
     ".ngrok-free.dev",
+    "mx4.local",
+    "backend",
 ]
 
 
@@ -52,6 +54,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://mx4.local:8080",
+    "backend",
 ]
 
 
@@ -66,6 +70,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "https://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://mx4.local:8080",
+    "backend",
 ]
 
 
