@@ -19,7 +19,7 @@ import {
 import { useOutletContext } from 'react-router-dom'
 import IntermediateLog, { type IntermediateLogEntry } from '../components/IntermediateLog'
 import NetworkDiagram from '../components/NetworkDiagram'
-import QuantumDetails from '../components/QuantumDetails'
+import QuantumDetails from '../components/Quantumdetails'
 import SimulationOverlay from '../components/SimulationOverlay'
 import type { RunHistoryRecord, WorkspaceContext } from '../components/AppShell'
 import { cities, modelEvaluations, routes, startingBudget } from '../data/routes'
@@ -224,20 +224,22 @@ export default function DashboardPage({ algorithm }: Props) {
     })),
     [routeCosts],
   )
-  const candidateRoutes = useMemo(
+  const includedRoutes = useMemo(
     () => availableRoutes.filter((route) => includedRouteIds.includes(route.id)),
     [availableRoutes, includedRouteIds],
   )
-  const networkNodeNames = useMemo(
-    () => [...new Set([
-      ...selectedNodes,
-      ...candidateRoutes.flatMap((route) => [route.from, route.to]),
-    ])],
-    [candidateRoutes, selectedNodes],
+  // Only routes whose two endpoints are both selected nodes can be sent,
+  // otherwise a path would reference a node that is not in `nodes`.
+  const candidateRoutes = useMemo(
+    () => includedRoutes.filter(
+      (route) => selectedNodes.includes(route.from) && selectedNodes.includes(route.to),
+    ),
+    [includedRoutes, selectedNodes],
   )
+  // Only the nodes the user selected on the map are sent to the planner.
   const networkCities = useMemo(
-    () => cities.filter((city) => networkNodeNames.includes(city.name)),
-    [networkNodeNames],
+    () => cities.filter((city) => selectedNodes.includes(city.name)),
+    [selectedNodes],
   )
   const candidateCostsValid = candidateRoutes.length > 0
     && candidateRoutes.every((route) => isValidCost(routeCosts[route.id]))
@@ -301,7 +303,7 @@ export default function DashboardPage({ algorithm }: Props) {
   function getValidationMessage() {
     if (!isBudgetValid) return 'Enter a valid budget of zero or more.'
     if (selectedNodes.length < 2) return 'Select at least two network nodes on the map.'
-    if (candidateRoutes.length === 0) return 'Check at least one route to include it as a candidate.'
+    if (candidateRoutes.length === 0) return 'Check at least one route that connects two selected nodes.'
     if (!candidateCostsValid) return 'Route costs must be non-negative values with at most two decimals.'
     if (runStatus === 'infeasible') return 'The backend could not connect this network within budget; adjust nodes, routes, or costs.'
     if (runStatus === 'pending') return 'The IBM Quantum job is still running. Its job id is in the log; resubmit with that job id to collect the result.'
@@ -448,7 +450,7 @@ export default function DashboardPage({ algorithm }: Props) {
                 <h2>Romania railway network</h2>
                 <span className="live-tag"><i /> {resultEdges.length} BUILT</span>
               </div>
-              <p>Select at least two required cities. Checked route candidates add their endpoints to the network automatically.</p>
+              <p>Select at least two cities. Only checked routes between selected cities are sent to the planner.</p>
             </div>
           </div>
           <NetworkDiagram
@@ -486,7 +488,7 @@ export default function DashboardPage({ algorithm }: Props) {
             )}
           </div>
           <div className="network-panel-footer">
-            <span><b>{selectedNodes.length.toString().padStart(2, '0')}</b> required · <b>{networkNodeNames.length.toString().padStart(2, '0')}</b> planner nodes</span><i />
+            <span><b>{selectedNodes.length.toString().padStart(2, '0')}</b> planner nodes</span><i />
             <span><b>{candidateRoutes.length.toString().padStart(2, '0')}</b> candidate routes</span><i />
             <span><b>{resultEdges.length.toString().padStart(2, '0')}</b> built</span>
           </div>
@@ -499,7 +501,7 @@ export default function DashboardPage({ algorithm }: Props) {
                 <span className="panel-icon">{algorithm === 'classic' ? <Cpu size={15} /> : <Orbit size={15} />}</span>
                 <h2>Routes &amp; costs</h2>
               </div>
-              <p>Checked routes are candidate edges; their endpoint cities are added to the submitted network.</p>
+              <p>Checked routes are candidate edges. Only routes between selected nodes are submitted to the planner.</p>
             </div>
             <span className={`algorithm-run-state ${runStatus}`} role="status">
               {runStatus === 'running'
@@ -518,10 +520,12 @@ export default function DashboardPage({ algorithm }: Props) {
           <div className="route-list algorithm-route-list" aria-live="polite">
             {routes.map((route, index) => {
               const isIncluded = includedRouteIds.includes(route.id)
+              const isAvailable = selectedNodes.includes(route.from) && selectedNodes.includes(route.to)
+              const isActive = isIncluded && isAvailable
               const selectedEdge = resultEdges.find((edge) => String(edge.id) === route.id)
               const isCostValid = isValidCost(routeCosts[route.id])
               return (
-                <div key={route.id} className={`construction-route algorithm-route config-route ${selectedEdge ? 'construction-route-built' : ''} ${!isIncluded ? 'config-route-excluded' : ''}`}>
+                <div key={route.id} className={`construction-route algorithm-route config-route ${selectedEdge ? 'construction-route-built' : ''} ${!isActive ? 'config-route-excluded' : ''}`}>
                   <span className="route-index">{String(index + 1).padStart(2, '0')}</span>
                   <label className="route-include-control">
                     <input
@@ -546,14 +550,14 @@ export default function DashboardPage({ algorithm }: Props) {
                       onChange={(event) => updateRouteCost(route.id, event.target.value)}
                     />
                   </label>
-                  <span className="route-value"><small>{selectedEdge?.stage.toUpperCase() ?? (isIncluded ? 'CANDIDATE' : 'REWARD')}</small><strong>+{selectedEdge ? formatNumber(selectedEdge.value) : route.value}</strong></span>
-                  {isIncluded && !isCostValid && <span className="route-cost-error">Use a non-negative cost with up to 2 decimals</span>}
+                  <span className="route-value"><small>{selectedEdge?.stage.toUpperCase() ?? (isActive ? 'CANDIDATE' : isIncluded ? 'NODE NOT SELECTED' : 'REWARD')}</small><strong>+{selectedEdge ? formatNumber(selectedEdge.value) : route.value}</strong></span>
+                  {isActive && !isCostValid && <span className="route-cost-error">Use a non-negative cost with up to 2 decimals</span>}
                 </div>
               )
             })}
           </div>
           <div className="route-list-footer algorithm-list-footer">
-            <span>{candidateRoutes.length} candidate routes sent to planner</span>
+            <span>{candidateRoutes.length} routes between selected nodes sent to planner</span>
             <span>{resultEdges.length} routes in returned network</span>
           </div>
         </section>
