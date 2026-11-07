@@ -8,3 +8,4 @@
 .env
 **/__pycache__/
 *.pyc
+/quantic_solution/app/.env

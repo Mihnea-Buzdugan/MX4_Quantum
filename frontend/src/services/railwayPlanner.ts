@@ -1,6 +1,10 @@
 import { routes } from '../data/routes'
 import type { RailCity, RailRoute } from '../data/routes'
 import { authFetch } from '../utils/auth'
+import type { RailwayPlanResponse } from './railwayPlannerTypes'
+
+// Response types live in railwayPlannerTypes.ts; re-exported so existing imports keep working.
+export type { RailwayPlanResponse, PlanEdge as RailwayPlanEdge } from './railwayPlannerTypes'
 
 export type RailwayPlanOptions = {
   quantum_fraction: number
@@ -41,7 +45,7 @@ export const DEFAULT_PLANNER_OPTIONS: RailwayPlanOptions = {
   ibm_optimization_level: 3,
   ibm_dynamical_decoupling: true,
   ibm_twirling: false,
-  ibm_timeout: 3600,
+  ibm_timeout: 3600, // the server caps this (PLANNER_MAX_IBM_TIMEOUT), then answers "pending"
   ibm_job_id: '',
   ibm_fallback: false,
 }
@@ -61,54 +65,6 @@ export type RailwayPlanRequest = {
   algorithm?: string
 }
 
-export type RailwayPlanEdge = {
-  id: string | number
-  from: string
-  to: string
-  cost: number
-  value: number
-  stage: 'quantum' | 'connector' | 'extra'
-}
-
-export type RailwayPlanResponse = {
-  status: 'ok' | 'infeasible'
-  connected: boolean
-  budget: number
-  conflict_pairs: Array<Array<string | number>>
-  notes: string[]
-  reason?: string
-  // Id of the saved plan, added by Django when the user is logged in.
-  plan_id?: number
-  minimum_connection_cost?: number | null
-  total_cost?: number | null
-  total_value?: number | null
-  remaining_budget?: number | null
-  cost_breakdown?: {
-    quantum: number
-    connectors: number
-    extra: number
-  }
-  graph?: {
-    nodes: Array<{ name: string; lon: number; lat: number }>
-    edges: RailwayPlanEdge[]
-  }
-  quantum?: {
-    skipped?: boolean
-    reason?: string
-    sampler?: string
-    qubits?: number | null
-    route_qubits?: number | null
-    slack_qubits?: number | null
-    depth?: number | null
-    quantum_budget?: number | null
-    feasible_sample_rate?: number | null
-    p_feasible_qaoa?: number | null
-    best_sampled_value?: number | null
-    exact_optimum_value?: number | null
-    [key: string]: unknown
-  }
-}
-
 export class RailwayPlannerError extends Error {
   readonly status: number
 
@@ -123,6 +79,13 @@ function getPlannerUrl() {
   return import.meta.env.VITE_RAILWAY_PLANNER_URL || 'http://localhost:8000/api/railway/plan'
 }
 
+// Django drops `algorithm` before calling FastAPI, so the target of the final QAOA circuit is
+// chosen here through options.execution: real IBM hardware for the "Real Hardware" algorithm,
+// the simulator for everything else (simulated and classic).
+export function executionForAlgorithm(algorithm?: string): 'simulator' | 'ibm' {
+  return /hardware|ibm/i.test(algorithm ?? '') ? 'ibm' : 'simulator'
+}
+
 // The planner wants numeric path ids (0, 1, 2, ...). The app's routes use
 // string ids (e.g. "cluj-brasov"), so the planner id is the route's position
 // in the full `routes` list, and it is stable no matter which routes are sent.
@@ -135,24 +98,36 @@ function toPlannerId(route: RailRoute): number {
 }
 
 // Reverse of toPlannerId: planner id -> the app's route id.
-// Anything that is not a valid index is returned unchanged.
+// Anything that is not a valid index (e.g. "slack 4") is returned unchanged.
 function toRouteId(plannerId: string | number): string | number {
   const index = Number(plannerId)
   return Number.isInteger(index) && routes[index] ? routes[index].id : plannerId
 }
 
 // The rest of the UI matches routes by their string id, so translate every
-// id in the response back to it.
+// route id in the response back to it: built edges, conflicts and QAOA variables.
 function withRouteIds(response: RailwayPlanResponse): RailwayPlanResponse {
+  const variables = response.quantum?.variables
   return {
     ...response,
-    conflict_pairs: (response.conflict_pairs ?? []).map((pair) => pair.map(toRouteId)),
+    conflicts: (response.conflicts ?? []).map((conflict) => ({
+      ...conflict,
+      paths: conflict.paths.map(toRouteId),
+    })),
     graph: response.graph
       ? {
         ...response.graph,
         edges: response.graph.edges.map((edge) => ({ ...edge, id: toRouteId(edge.id) })),
       }
       : response.graph,
+    quantum: response.quantum && variables
+      ? {
+        ...response.quantum,
+        variables: Object.fromEntries(
+          Object.entries(variables).map(([name, value]) => [name, name.startsWith('x') ? toRouteId(value) : value]),
+        ),
+      }
+      : response.quantum,
   }
 }
 
@@ -175,7 +150,8 @@ export function createRailwayPlanRequest(
       cost: route.constructionCost,
       value: route.value,
     })),
-    options: { ...DEFAULT_PLANNER_OPTIONS, ...options },
+    // explicit `options` still win, e.g. { execution: 'ibm_fake' } to test without IBM credentials
+    options: { ...DEFAULT_PLANNER_OPTIONS, execution: executionForAlgorithm(algorithm), ...options },
     algorithm,
   }
 }
@@ -230,6 +206,16 @@ export async function planRailwayNetwork(payload: RailwayPlanRequest): Promise<R
       typeof detail === 'string' ? detail : `Railway planner request failed: ${JSON.stringify(detail)}`,
       response.status,
     )
+  }
+
+  // 202: the IBM job was submitted but is still running; the body carries the job id.
+  if (
+    typeof body === 'object'
+    && body !== null
+    && 'status' in body
+    && body.status === 'pending'
+  ) {
+    return withRouteIds(body as RailwayPlanResponse)
   }
 
   if (

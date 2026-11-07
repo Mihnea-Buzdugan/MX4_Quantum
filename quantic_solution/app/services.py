@@ -26,14 +26,24 @@ from .schemas import SolveRequest
 
 log = logging.getLogger("railway_service")
 
+# Optional .env file (PLANNER_ALLOW_IBM, IBM_QUANTUM_TOKEN, IBM_QUANTUM_INSTANCE ...). Real
+# environment variables always win. It is loaded here, before the settings below are read, so
+# PLANNER_ALLOW_IBM in the .env file also works for the API process, not only for the workers.
+ENV_FILE = os.getenv("PLANNER_ENV_FILE") or None
+try:
+    load_env_file(ENV_FILE)
+except Exception:  # a missing/unreadable file must not stop the API from starting
+    log.warning("could not load env file %r", ENV_FILE, exc_info=True)
+
 MAX_WORKERS = int(os.getenv("PLANNER_MAX_WORKERS", "2"))
 
 # Real QPU runs spend the server's IBM credits: off unless explicitly enabled by the operator.
 ALLOW_IBM = os.getenv("PLANNER_ALLOW_IBM", "false").strip().lower() in {"1", "true", "yes"}
+# A real-hardware request holds one worker (and the HTTP request) while the IBM job queues, so the
+# wait is capped. After this many seconds the API answers "pending" with the job id.
+MAX_IBM_TIMEOUT = float(os.getenv("PLANNER_MAX_IBM_TIMEOUT", "300"))
 # Local noisy simulation costs ~0.4 s per shot, so cap it.
 MAX_FAKE_SHOTS = int(os.getenv("PLANNER_MAX_FAKE_SHOTS", "256"))
-# Optional .env file with IBM_QUANTUM_TOKEN / IBM_QUANTUM_INSTANCE (real env vars always win).
-ENV_FILE = os.getenv("PLANNER_ENV_FILE") or None
 
 
 # -----------------------------------------------------------------------------
@@ -117,6 +127,10 @@ def build_payload(req: SolveRequest) -> dict[str, Any]:
     expected by railway_planner.solve().
     """
 
+    options = req.options.model_dump(exclude={"auto_conflicts_from_crossings"})
+    # never let one request occupy a worker for longer than the operator allows
+    options["ibm_timeout"] = min(options["ibm_timeout"], MAX_IBM_TIMEOUT)
+
     return {
         "budget": req.budget,
 
@@ -138,8 +152,9 @@ def build_payload(req: SolveRequest) -> dict[str, Any]:
 
         "conflict_pairs": [list(pair) for pair in req.conflict_pairs],
 
-        # the deprecated alias was already folded into auto_conflicts by the schema
-        "options": req.options.model_dump(exclude={"auto_conflicts_from_crossings"}),
+        # req.algorithm (UI label) is not forwarded: the schema already turned it into
+        # options.execution ("simulator" or "ibm"); the deprecated auto_conflicts alias was folded too
+        "options": options,
     }
 
 
@@ -196,6 +211,7 @@ async def plan_network(
     _check_execution_policy(req)
 
     payload = build_payload(req)
+    log.info("planning: algorithm=%r execution=%s", req.algorithm, req.options.execution)
 
     loop = asyncio.get_running_loop()
 

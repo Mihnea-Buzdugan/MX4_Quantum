@@ -119,6 +119,8 @@ export type RailwayPlanResponse = {
   status: PlanStatus
   connected: boolean
   budget: number
+  // Id of the saved plan, added by Django when the user is logged in.
+  plan_id?: number
   conflicts: Conflict[]
   notes: string[]
   reason?: string | null
@@ -129,16 +131,4 @@ export type RailwayPlanResponse = {
   cost_breakdown?: { quantum: number; connectors: number; extra: number } | null
   graph?: { nodes: PlanNode[]; edges: PlanEdge[] } | null
   quantum?: QuantumStats | null
-}
-
-/**
- * Ask the API for the QAOA circuit (the server default is off to keep responses small).
- * Wrap the payload from createRailwayPlanRequest(): planRailwayNetwork(withCircuit(payload)).
- */
-export function withCircuit<T extends object>(payload: T): T {
-  const options = (payload as { options?: object }).options ?? {}
-  return {
-    ...payload,
-    options: { ...options, include_circuit: true, circuit_formats: ['qasm3'] },
-  } as T
 }
