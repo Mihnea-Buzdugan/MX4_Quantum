@@ -1,21 +1,21 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, Navigate, Outlet } from 'react-router-dom';
 import Loading from './components/Loading';
-import './App.css';
+import './styles/index.css';
 import ScrollToTop from "./components/ScrollToTop";
 import { authFetch, isLoggedIn, logout } from './utils/auth';
 
 
 const Index = React.lazy(() => import('./pages/Index'));
-const SignUp = React.lazy(() => import('./pages/Authentification/SignUp.jsx'));
-const Login = React.lazy(() => import('./pages/Authentification/Login.jsx'));
+const AuthPage = React.lazy(() => import('./pages/AuthPage'));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage'))
 
 function App() {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
     const navigate = useNavigate();
 
-    // Returns the promise so Login/SignUp can `await` it before the UI re-renders.
+    // Returns the promise so AuthPage can `await` it before it navigates.
     const fetchUser = () => {
         // No valid session stored: skip the request, the route guard sends us to /login.
         if (!isLoggedIn()) {
@@ -98,19 +98,19 @@ function App() {
             <Suspense fallback={<Loading />}>
                 <ScrollToTop />
                 <Routes>
-                    {/* Once fetchUser() sets the user after a successful login/signup,
-                        these routes redirect to "/" automatically. */}
+                    {/* AuthPage stores the tokens, then calls fetchUser() so `user` is set before
+                        it navigates to "/". Logged-in users are redirected away from these pages. */}
                     <Route
                         path="/login"
-                        element={user ? <Navigate to="/" replace /> : <Login onLoginSuccess={fetchUser} />}
+                        element={user ? <Navigate to="/" replace /> : <AuthPage mode="login" onLoginSuccess={fetchUser} />}
                     />
                     <Route
-                        path="/signup"
-                        element={user ? <Navigate to="/" replace /> : <SignUp onLoginSuccess={fetchUser} />}
+                        path="/register"
+                        element={user ? <Navigate to="/" replace /> : <AuthPage mode="register" onLoginSuccess={fetchUser} />}
                     />
 
                     <Route element={user ? <Outlet /> : <Navigate to="/login" replace />}>
-                        <Route path="/" element={<Index user={user} onLogout={handleLogout} />} />
+                        <Route path="/" element={<DashboardPage />} />
                     </Route>
 
                     <Route path="*" element={<Navigate to="/" />} />
