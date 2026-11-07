@@ -1,23 +1,17 @@
-
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { GoogleOAuthProvider } from "@react-oauth/google";
 
-import App from "./App";
+import App from "./App.tsx";
+import "./styles/index.css";
 
 const rootElement = document.getElementById("root");
-
-if (!rootElement) {
-    throw new Error("Root element not found");
-}
+if (!rootElement) throw new Error("Could not find the application root element.");
 
 ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-        <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
-            <BrowserRouter>
-                <App />
-            </BrowserRouter>
-        </GoogleOAuthProvider>
+        <BrowserRouter>
+            <App />
+        </BrowserRouter>
     </React.StrictMode>
 );

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CircleCheck,
   Cpu,
+  History,
   Orbit,
   Menu,
   TrainFront,
@@ -13,16 +14,25 @@ import {
 } from 'lucide-react'
 
 const navigation = [
-  { label: 'Quantum Algorithm', to: '/quantum-algorithm', icon: Orbit },
-  { label: 'Classic Algorithm', to: '/classic-algorithm', icon: Cpu },
+  { label: 'Classic Algorithm', to: '/classic-algorithm', icon: Cpu, mode: 'CLASSIC' },
+  { label: 'Quantum Algorithm (Simulated)', to: '/quantum-algorithm/simulated', icon: Orbit, mode: 'SIMULATOR' },
+  { label: 'Quantum Algorithm (Real Hardware)', to: '/quantum-algorithm/real-hardware', icon: Orbit, mode: 'REAL HARDWARE' },
+  { label: 'Run History', to: '/run-history', icon: History, mode: 'HISTORY' },
 ]
 
 export default function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>('realtime')
+  const [runMetrics, setRunMetrics] = useState<RunMetrics | null>(null)
+  const [runHistory, setRunHistory] = useState<RunHistoryRecord[]>([])
   const location = useLocation()
-  const isQuantum = location.pathname !== '/classic-algorithm'
-  const algorithmName = isQuantum ? 'Quantum Algorithm' : 'Classic Algorithm'
+  const activeWorkspace = navigation.find(({ to }) => location.pathname === to) ?? navigation[0]
+  const algorithmName = activeWorkspace.label
+  const appendRunHistory = useCallback((record: RunHistoryRecord) => {
+    setRunHistory((history) => [record, ...history])
+  }, [])
+  const clearRunHistory = useCallback(() => setRunHistory([]), [])
 
   return (
     <div className="app-shell">
@@ -52,7 +62,10 @@ export default function AppShell() {
               key={to}
               to={to}
               className={({ isActive }) => `nav-link ${isActive ? 'nav-link-active' : ''}`}
-              onClick={() => setSidebarOpen(false)}
+              onClick={() => {
+                setSidebarOpen(false)
+                setRunMetrics(null)
+              }}
             >
               <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
@@ -65,7 +78,7 @@ export default function AppShell() {
         <div className="network-health">
           <CircleCheck size={14} className="sidebar-plan-icon" />
           <span>{algorithmName}</span>
-          <span className="health-status">SIM</span>
+          <span className="health-status">{activeWorkspace.mode}</span>
         </div>
         <div className="sidebar-bottom">
           <div className="help-link"><Activity size={16} /> Route evaluation <span>↗</span></div>
@@ -87,6 +100,24 @@ export default function AppShell() {
           </div>
           <div className="topbar-actions">
             <div className="system-status"><span className="health-indicator" /> {algorithmName} ready</div>
+            <label className="simulation-speed-control">
+              <span>Speed</span>
+              <select
+                aria-label="Simulation speed"
+                value={simulationSpeed}
+                onChange={(event) => {
+                  setRunMetrics(null)
+                  setSimulationSpeed(event.target.value === 'slow' ? 'slow' : 'realtime')
+                }}
+              >
+                <option value="realtime">Realtime</option>
+                <option value="slow">x0.5 Speed</option>
+              </select>
+            </label>
+            <div className="speed-comparison" aria-live="polite" aria-label="Simulated and real execution time">
+              <span>SIM / REAL</span>
+              <strong>{formatDuration(runMetrics?.simulatedMs)} / {formatDuration(runMetrics?.executionMs)}</strong>
+            </div>
             <div className="topbar-popover-wrap">
               <button className="icon-button notification-button" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}>
                 <Bell size={17} /><span className="notification-dot" />
@@ -96,8 +127,38 @@ export default function AppShell() {
             <Link to="/login" className="topbar-avatar" aria-label="Open sign in page">MB</Link>
           </div>
         </header>
-        <main className="page-content"><Outlet /></main>
+        <main className="page-content">
+          <Outlet context={{ simulationSpeed, setRunMetrics, runHistory, appendRunHistory, clearRunHistory }} />
+        </main>
       </div>
     </div>
   )
+}
+
+export type SimulationSpeed = 'realtime' | 'slow'
+export type RunMetrics = {
+  executionMs: number
+  simulatedMs: number
+}
+export type RunHistoryRecord = {
+  timestamp: number
+  algorithm: string
+  speed: SimulationSpeed
+  executionMs: number
+  planStatus: 'valid' | 'invalid'
+  totalCost: number
+  totalReward: number
+  selectedRoutes: string[]
+}
+export type WorkspaceContext = {
+  simulationSpeed: SimulationSpeed
+  setRunMetrics: (metrics: RunMetrics | null) => void
+  runHistory: RunHistoryRecord[]
+  appendRunHistory: (record: RunHistoryRecord) => void
+  clearRunHistory: () => void
+}
+
+function formatDuration(durationMs: number | undefined) {
+  if (durationMs === undefined) return '—'
+  return durationMs < 1000 ? `${durationMs.toFixed(1)} ms` : `${(durationMs / 1000).toFixed(1)} s`
 }
