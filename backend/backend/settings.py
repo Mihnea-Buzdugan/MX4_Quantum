@@ -54,8 +54,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "https://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://mx4.local:8080",
-    "http://backend",
+    "http://mx4.local",
+    "http://frontend",
 ]
 
 
@@ -74,7 +74,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://localhost:5173",
     "http://127.0.0.1:5173",
     "http://mx4.local:8080",
-    "http://backend",
+    "http://mx4.local",
+    "http://frontend",
 ]
 
 

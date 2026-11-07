@@ -1,20 +1,81 @@
 import { useState, type FormEvent } from 'react'
-import { ArrowRight, Eye, EyeOff, LockKeyhole, Mail, TrainFront } from 'lucide-react'
+import { ArrowRight, Eye, EyeOff, LockKeyhole, Mail, TrainFront, User } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
+import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
+import { apiUrl, setTokens, type Tokens } from '../utils/auth'
 
-type Props = { mode: 'login' | 'register' }
+type Props = {
+  mode: 'login' | 'register'
+  // Optional: lets App refresh its user state (e.g. fetchUser) right after tokens are stored.
+  onLoginSuccess?: () => void | Promise<void>
+}
 
-export default function AuthPage({ mode }: Props) {
+type AuthResponse = {
+  message?: string
+  tokens?: Tokens
+}
+
+export default function AuthPage({ mode, onLoginSuccess }: Props) {
   const isRegister = mode === 'register'
   const navigate = useNavigate()
   const [showPassword, setShowPassword] = useState(false)
   const [notice, setNotice] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  // Shared by email login, signup and Google login: POST, store tokens, enter the app.
+  async function authenticate(path: string, payload: Record<string, string>) {
     setNotice('')
-    navigate('/')
+    setSubmitting(true)
+    try {
+      const response = await fetch(apiUrl(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data: AuthResponse = await response.json().catch(() => ({}))
+
+      if (!response.ok || !data.tokens) {
+        setNotice(data.message ?? 'Authentication failed. Please try again.')
+        return
+      }
+
+      setTokens(data.tokens)
+      await onLoginSuccess?.()
+      navigate('/')
+    } catch {
+      setNotice('Could not reach the server. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const email = String(form.get('email') ?? '').trim()
+    const password = String(form.get('password') ?? '')
+
+    if (isRegister) {
+      // First and last name are separate fields; the API also wants a username (we use the email).
+      await authenticate('/api/signup/', {
+        email,
+        password,
+        username: email,
+        first_name: String(form.get('first_name') ?? '').trim(),
+        last_name: String(form.get('last_name') ?? '').trim(),
+      })
+    } else {
+      await authenticate('/api/user_login/', { email, password })
+    }
+  }
+
+  async function handleGoogleSuccess(credentialResponse: CredentialResponse) {
+    if (!credentialResponse.credential) {
+      setNotice('Google sign-in failed. Please try again.')
+      return
+    }
+    await authenticate('/api/google_login/', { google_token: credentialResponse.credential })
   }
 
   return (
@@ -33,10 +94,16 @@ export default function AuthPage({ mode }: Props) {
 
           <form className="auth-form" onSubmit={handleSubmit}>
             {isRegister && (
-              <label className="field-label">
-                Full name
-                <input className="text-input" name="name" autoComplete="name" placeholder="Your name" required />
-              </label>
+              <div className="name-row">
+                <label className="field-label">
+                  First name
+                  <span className="input-wrap"><User size={15} /><input className="text-input" name="first_name" autoComplete="given-name" placeholder="First name" required /></span>
+                </label>
+                <label className="field-label">
+                  Last name
+                  <span className="input-wrap"><User size={15} /><input className="text-input" name="last_name" autoComplete="family-name" placeholder="Last name" required /></span>
+                </label>
+              </div>
             )}
             <label className="field-label">
               Work email
@@ -47,11 +114,19 @@ export default function AuthPage({ mode }: Props) {
               <span className="input-wrap"><LockKeyhole size={15} /><input className="text-input" type={showPassword ? 'text' : 'password'} name="password" autoComplete={isRegister ? 'new-password' : 'current-password'} placeholder="Enter your password" minLength={8} required /><button type="button" className="password-toggle" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span>
             </label>
             {!isRegister && <div className="auth-options"><label className="remember-check"><input type="checkbox" /> <span>Remember me</span></label><button type="button" className="text-link" onClick={() => setNotice('Password reset is not connected in this demo.')}>Forgot password?</button></div>}
-            <button className="button button-primary auth-submit" type="submit">{isRegister ? 'Create account' : 'Sign in to workspace'} <ArrowRight size={16} /></button>
+            <button className="button button-primary auth-submit" type="submit" disabled={submitting}>{isRegister ? 'Create account' : 'Sign in to workspace'} <ArrowRight size={16} /></button>
           </form>
 
           <div className="auth-divider"><span /> <span>OR</span> <span /></div>
-          <button className="button button-secondary auth-sso" type="button" onClick={() => setNotice('Single sign-on is not connected in this demo.')}>Continue with single sign-on</button>
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <GoogleLogin
+              onSuccess={handleGoogleSuccess}
+              onError={() => setNotice('Google sign-in failed. Please try again.')}
+              text={isRegister ? 'signup_with' : 'signin_with'}
+              theme="outline"
+              size="large"
+            />
+          </div>
           <div className="auth-notice" role="status">{notice}</div>
           <p className="auth-switch">{isRegister ? 'Already have an account?' : 'New to Quantum Rail?'} <Link to={isRegister ? '/login' : '/register'}>{isRegister ? 'Sign in' : 'Create an account'}</Link></p>
         </motion.div>
