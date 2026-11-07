@@ -1,0 +1,35 @@
+.qd-panel { margin-top: 16px; }
+.qd-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.qd-header h2 { margin: 0; font-size: 16px; }
+.qd-header p { margin: 2px 0 0; opacity: 0.7; font-size: 12px; }
+.qd-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.qd-tab { border: 1px solid rgba(128, 128, 128, 0.35); background: transparent; color: inherit; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+.qd-tab:hover { background: rgba(128, 128, 128, 0.12); }
+.qd-tab-active { background: rgba(124, 92, 255, 0.22); border-color: rgba(124, 92, 255, 0.7); }
+
+.qd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.qd-chip { border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px; padding: 2px 8px; font-size: 12px; font-family: ui-monospace, monospace; }
+.qd-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; opacity: 0.8; margin-bottom: 8px; }
+.qd-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+.qd-scroll { overflow: auto; max-width: 100%; border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 8px; padding: 6px; }
+.qd-scroll svg { display: block; color: inherit; }
+.qd-scroll svg text { fill: currentColor; font-family: ui-monospace, monospace; }
+
+.qd-actions { display: flex; gap: 8px; margin: 10px 0; }
+.qd-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(128, 128, 128, 0.4); background: transparent; color: inherit; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.qd-btn:hover { background: rgba(128, 128, 128, 0.12); }
+
+.qd-pre { margin: 6px 0; padding: 10px; border-radius: 8px; background: rgba(128, 128, 128, 0.12); font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 320px; white-space: pre-wrap; word-break: break-word; }
+.qd-note { font-size: 12px; opacity: 0.75; margin: 6px 0; }
+.qd-error { font-size: 12px; color: #e5484d; margin: 6px 0; }
+
+.qd-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; margin: 0 0 12px; }
+.qd-kv dt { opacity: 0.65; }
+.qd-kv dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-word; }
+
+.qd-table-wrap { overflow: auto; max-height: 300px; border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 8px; margin-bottom: 12px; }
+.qd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.qd-table th, .qd-table td { text-align: left; padding: 5px 10px; border-bottom: 1px solid rgba(128, 128, 128, 0.18); font-family: ui-monospace, monospace; }
+.qd-table th { position: sticky; top: 0; background: rgba(40, 40, 50, 0.9); color: #fff; font-weight: 600; }
+.qd-details summary { cursor: pointer; font-size: 12px; opacity: 0.8; margin: 6px 0; }

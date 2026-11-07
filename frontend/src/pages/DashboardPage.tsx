@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowDownRight,
@@ -19,17 +19,20 @@ import {
 import { useOutletContext } from 'react-router-dom'
 import IntermediateLog, { type IntermediateLogEntry } from '../components/IntermediateLog'
 import NetworkDiagram from '../components/NetworkDiagram'
+import QuantumDetails from '../components/Quantumdetails'
 import SimulationOverlay from '../components/SimulationOverlay'
 import type { RunHistoryRecord, WorkspaceContext } from '../components/AppShell'
 import { cities, modelEvaluations, routes, startingBudget } from '../data/routes'
+import { createRailwayPlanRequest, planRailwayNetwork } from '../services/railwayPlanner'
 import {
-  createRailwayPlanRequest,
-  planRailwayNetwork,
+  withCircuit,
+  type Conflict,
+  type PathId,
   type RailwayPlanResponse,
-} from '../services/railwayPlanner'
+} from '../services/railwayPlannerTypes'
 
 type Algorithm = 'quantum-simulated' | 'quantum-hardware' | 'classic'
-type RunStatus = 'ready' | 'running' | 'complete' | 'infeasible' | 'error'
+type RunStatus = 'ready' | 'running' | 'complete' | 'infeasible' | 'pending' | 'error'
 
 type Props = {
   algorithm: Algorithm
@@ -45,6 +48,27 @@ function isValidCost(value: string) {
 
 function formatNumber(value: number | null | undefined) {
   return value === undefined || value === null ? '—' : Number(value.toFixed(3)).toString()
+}
+
+function formatList(values: number[] | undefined) {
+  return values && values.length > 0 ? `[${values.map((v) => Number(v.toFixed(4))).join(', ')}]` : '—'
+}
+
+function routeName(id: PathId) {
+  const route = routes.find((r) => String(r.id) === String(id))
+  return route ? `${route.from} → ${route.to}` : `route ${id}`
+}
+
+function describeConflict(conflict: Conflict) {
+  const pair = conflict.paths.map(routeName).join(' ↔ ')
+  let where = ''
+  if (conflict.type === 'too_close') {
+    const km = conflict.distance_km
+    where = km != null ? ` · ${formatNumber(km)} km apart` : conflict.distance != null ? ` · ${formatNumber(conflict.distance)} apart` : ''
+  } else if (conflict.at) {
+    where = ` · at ${conflict.at[0].toFixed(3)}, ${conflict.at[1].toFixed(3)}`
+  }
+  return `${pair} (${conflict.type}${where})`
 }
 
 function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntry[] {
@@ -64,18 +88,46 @@ function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntr
     })
   }
 
-  if (response.quantum) {
-    const stats = response.quantum
+  const stats = response.quantum
+  if (stats) {
+    const layers = stats.layers ?? stats.depth
     entries.push({
       label: 'QAOA configuration',
       message: [
         stats.sampler ?? (stats.skipped ? 'Skipped' : undefined),
-        stats.qubits === undefined ? undefined : `${stats.qubits} qubits`,
-        stats.depth === undefined ? undefined : `depth ${stats.depth}`,
+        stats.qubits != null ? `${stats.qubits} qubits` : undefined,
+        stats.route_qubits != null && stats.slack_qubits != null
+          ? `${stats.route_qubits} route + ${stats.slack_qubits} slack` : undefined,
+        layers != null ? `${layers} layer${layers === 1 ? '' : 's'}` : undefined,
       ].filter(Boolean).join(' · ') || stats.reason || 'Diagnostics returned.',
     })
     if (typeof stats.quantum_budget === 'number') {
       entries.push({ label: 'Quantum budget', message: formatNumber(stats.quantum_budget) })
+    }
+    if (stats.penalties) {
+      entries.push({
+        label: 'Penalty weights',
+        message: `λ ${formatNumber(stats.penalties.lam)} · μ ${formatNumber(stats.penalties.mu)} · slack weights ${stats.penalties.slack_weights?.join(', ') ?? '—'}`,
+      })
+    }
+    if (stats.angles) {
+      entries.push({
+        label: 'Optimised angles',
+        message: `γ ${formatList(stats.angles.gammas)} · β ${formatList(stats.angles.betas)}`,
+      })
+    }
+    if (stats.circuit && !stats.circuit.error) {
+      entries.push({
+        label: 'QAOA circuit',
+        message: [
+          stats.circuit.num_qubits != null ? `${stats.circuit.num_qubits} qubits` : undefined,
+          stats.circuit.depth != null ? `depth ${stats.circuit.depth}` : undefined,
+          stats.circuit.two_qubit_gates != null ? `${stats.circuit.two_qubit_gates} two-qubit gates` : undefined,
+        ].filter(Boolean).join(' · ') || 'Circuit returned.',
+      })
+    }
+    if (typeof stats.expected_energy === 'number') {
+      entries.push({ label: 'Expected energy', message: formatNumber(stats.expected_energy) })
     }
     if (typeof stats.feasible_sample_rate === 'number') {
       entries.push({
@@ -86,7 +138,7 @@ function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntr
     if (typeof stats.p_feasible_qaoa === 'number') {
       entries.push({
         label: 'QAOA feasible probability',
-        message: `${(stats.p_feasible_qaoa * 100).toFixed(2)}%`,
+        message: `${(stats.p_feasible_qaoa * 100).toFixed(2)}%${typeof stats.p_feasible_uniform === 'number' ? ` (uniform ${(stats.p_feasible_uniform * 100).toFixed(2)}%)` : ''}`,
       })
     }
     if (typeof stats.best_sampled_value === 'number') {
@@ -94,6 +146,25 @@ function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntr
     }
     if (typeof stats.exact_optimum_value === 'number') {
       entries.push({ label: 'Exact optimum value', message: formatNumber(stats.exact_optimum_value) })
+    }
+
+    const ex = stats.execution
+    if (ex) {
+      entries.push({
+        label: 'Hardware execution',
+        message: [
+          ex.backend,
+          ex.status ? `status ${ex.status}` : undefined,
+          ex.shots != null ? `${ex.shots} shots` : undefined,
+          ex.job_id ? `job ${ex.job_id}` : undefined,
+          ex.layout_method ? `${ex.layout_method} layout` : undefined,
+          ex.isa_depth != null ? `compiled depth ${ex.isa_depth}` : undefined,
+          ex.isa_two_qubit_gates != null ? `${ex.isa_two_qubit_gates} two-qubit gates` : undefined,
+          typeof ex.estimated_success === 'number' ? `estimated success ${(ex.estimated_success * 100).toFixed(2)}%` : undefined,
+          ex.quantum_seconds != null ? `${formatNumber(ex.quantum_seconds)} s QPU time` : undefined,
+          ex.error,
+        ].filter(Boolean).join(' · '),
+      })
     }
   }
 
@@ -104,14 +175,15 @@ function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntr
     })
   }
 
-  if (response.conflict_pairs.length > 0) {
+  const conflicts = response.conflicts ?? []
+  if (conflicts.length > 0) {
     entries.push({
-      label: 'Route conflicts',
-      message: response.conflict_pairs.map((pair) => pair.join(' ↔ ')).join(', '),
+      label: `Route conflicts (${conflicts.length})`,
+      message: conflicts.map(describeConflict).join('; '),
     })
   }
 
-  for (const note of response.notes) {
+  for (const note of response.notes ?? []) {
     entries.push({ label: 'Planner note', message: note })
   }
 
@@ -175,7 +247,8 @@ export default function DashboardPage({ algorithm }: Props) {
   const totalCost = result?.total_cost ?? 0
   const totalReward = result?.total_value ?? 0
   const remainingBudget = result?.remaining_budget ?? null
-  const hasPlanStatus = result !== null
+  const isPending = result?.status === 'pending'
+  const hasPlanStatus = result !== null && !isPending
   const isValidPlan = result?.status === 'ok'
     && result.connected
     && typeof result.total_cost === 'number'
@@ -183,6 +256,9 @@ export default function DashboardPage({ algorithm }: Props) {
   const routeStages: Record<string, 'quantum' | 'connector' | 'extra'> = Object.fromEntries(
     resultEdges.map((edge) => [String(edge.id), edge.stage]),
   )
+  const sampler = result?.quantum?.sampler ?? null
+  const usedRealHardware = sampler?.startsWith('ibm-qpu') === true
+  const stableRouteName = useCallback((id: PathId) => routeName(id), [])
 
   // Routes the planner actually used. Before a run (or if the planner returned
   // no edges) the map shows all candidate routes; after a successful run it
@@ -229,8 +305,9 @@ export default function DashboardPage({ algorithm }: Props) {
     if (candidateRoutes.length === 0) return 'Check at least one route to include it as a candidate.'
     if (!candidateCostsValid) return 'Route costs must be non-negative values with at most two decimals.'
     if (runStatus === 'infeasible') return 'The backend could not connect this network within budget; adjust nodes, routes, or costs.'
+    if (runStatus === 'pending') return 'The IBM Quantum job is still running. Its job id is in the log; resubmit with that job id to collect the result.'
     if (runStatus === 'error') return 'The request failed. Check that the FastAPI planner is running and try again.'
-    if (runStatus === 'complete') return 'Planner finished. Review the returned network and QAOA diagnostics below.'
+    if (runStatus === 'complete') return 'Planner finished. Review the returned network, circuit and QAOA diagnostics below.'
     return 'Ready to submit the selected network to the FastAPI planner.'
   }
 
@@ -240,10 +317,11 @@ export default function DashboardPage({ algorithm }: Props) {
     resetResults()
     setRunStatus('running')
     const startedAt = performance.now()
-    const payload = createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName)
+    // withCircuit asks the API for the QAOA circuit (options.include_circuit)
+    const payload = withCircuit(createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName))
 
     try {
-      const response = await planRailwayNetwork(payload)
+      const response: RailwayPlanResponse = await planRailwayNetwork(payload)
       const elapsedMs = performance.now() - startedAt
       const finishedAt = Date.now()
       const completedSuccessfully = response.status === 'ok'
@@ -254,11 +332,12 @@ export default function DashboardPage({ algorithm }: Props) {
       setResult(response)
       setLogEntries(makeResponseEntries(response))
       setExecutionTime(elapsedMs)
-      setRunStatus(response.status === 'ok' ? 'complete' : 'infeasible')
+      setRunStatus(response.status === 'ok' ? 'complete' : response.status === 'pending' ? 'pending' : 'infeasible')
       setRunMetrics({ executionMs: elapsedMs, simulatedMs: null })
       if (!completedSuccessfully && response.status === 'ok') {
         setSimulationError('The planner returned a network that is disconnected or exceeds the submitted budget.')
       }
+      if (response.status === 'pending') return // no finished plan to record yet
 
       const record: RunHistoryRecord = {
         timestamp: finishedAt,
@@ -355,8 +434,8 @@ export default function DashboardPage({ algorithm }: Props) {
         <article className={`panel plan-status ${!hasPlanStatus ? 'plan-status-pending' : isValidPlan ? 'plan-status-valid' : 'plan-status-invalid'}`} role="status" aria-live="polite">
           {!hasPlanStatus ? <Target size={19} /> : isValidPlan ? <CircleCheck size={19} /> : <CircleX size={19} />}
           <div>
-            <strong>{!hasPlanStatus ? 'Plan not run' : isValidPlan ? 'Valid Plan' : 'Invalid Plan (Over Budget / Infeasible)'}</strong>
-            <span>{!hasPlanStatus ? 'Run the planner to evaluate the selected network.' : isValidPlan ? 'Connected network is within budget.' : result?.reason ?? 'Planner did not return a valid connected network.'}</span>
+            <strong>{isPending ? 'IBM job pending' : !hasPlanStatus ? 'Plan not run' : isValidPlan ? 'Valid Plan' : 'Invalid Plan (Over Budget / Infeasible)'}</strong>
+            <span>{isPending ? result?.reason ?? 'The hardware job is still running.' : !hasPlanStatus ? 'Run the planner to evaluate the selected network.' : isValidPlan ? 'Connected network is within budget.' : result?.reason ?? 'Planner did not return a valid connected network.'}</span>
           </div>
         </article>
       </section>
@@ -430,9 +509,11 @@ export default function DashboardPage({ algorithm }: Props) {
                   ? <><CircleCheck size={11} /> Complete</>
                   : runStatus === 'infeasible'
                     ? <><CircleX size={11} /> Infeasible</>
-                    : runStatus === 'error'
-                      ? <><CircleX size={11} /> Failed</>
-                      : 'Ready'}
+                    : runStatus === 'pending'
+                      ? <><LoaderCircle size={11} /> Pending</>
+                      : runStatus === 'error'
+                        ? <><CircleX size={11} /> Failed</>
+                        : 'Ready'}
             </span>
           </div>
           <div className="route-list algorithm-route-list" aria-live="polite">
@@ -485,6 +566,8 @@ export default function DashboardPage({ algorithm }: Props) {
         remainingBudget={remainingBudget}
       />
 
+      <QuantumDetails stats={result?.quantum} conflicts={result?.conflicts} routeName={stableRouteName} />
+
       <section className="panel model-evaluation-panel" id="model-evaluation">
         <div className="model-demo-header">
           <div><span className="eyebrow">QUANTUM OPTIMIZATION <i /> REFERENCE</span><h2>Model Evaluation Demo</h2><p>Example QAOA budget trade-offs; the live result above is returned by the Python planner.</p></div>
@@ -506,7 +589,14 @@ export default function DashboardPage({ algorithm }: Props) {
         </div>
       </section>
 
-      <div className="demo-disclaimer"><span className="disclaimer-dot" /> All workspaces currently use the same hybrid FastAPI planner; its QAOA stage runs in the Python worker and does not dispatch to real quantum hardware.</div>
+      <div className="demo-disclaimer">
+        <span className="disclaimer-dot" />{' '}
+        {sampler
+          ? usedRealHardware
+            ? `The last run sampled the final QAOA circuit on real IBM Quantum hardware (${result?.quantum?.execution?.backend ?? 'IBM backend'}); angles were trained on a local simulator.`
+            : `The last run sampled the QAOA circuit with "${sampler}"; this was not real quantum hardware.`
+          : 'All workspaces use the same hybrid FastAPI planner. The QAOA stage runs in the Python worker and only dispatches to IBM hardware when the server enables it.'}
+      </div>
       <AnimatePresence>{isRunningNow && <SimulationOverlay statusMessage="Waiting for QAOA and network completion response" intervalMs={simulationSpeed === 'slow' ? 5600 : 2800} />}</AnimatePresence>
     </div>
   )

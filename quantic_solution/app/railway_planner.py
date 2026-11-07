@@ -21,19 +21,55 @@ Input (JSON file path as argument, or JSON on stdin):
            # or [{"name": "Iasi", "lon": 27.6, "lat": 47.17}, ...]
   "paths": [{"id": 0, "from": "Iasi", "to": "Brasov", "cost": 2, "value": 4}, ...],
            # "id" defaults to the list index, "value" defaults to 1
-  "conflict_pairs": [[0, 1], [3, 4]],            # optional: path ids that may never both be built
+  "conflict_pairs": [[0, 1]],                    # optional, rarely needed: extra NON-geometric conflicts
   "options": {                                   # all optional
     "quantum_fraction": 0.8, "qaoa_depth": 2, "shots": 2048, "seed": 2026,
     "max_qubits": 16, "restarts": 6, "maxiter": 300,
     "use_leftover_for_value": true,
-    "auto_conflicts_from_crossings": false,      # treat geometrically crossing paths as conflicts
-    "embedding": false                           # report a compact heavy-hex qubit layout
+    "auto_conflicts": true,                      # detect conflict pairs from the node coordinates
+    "coordinate_system": "lonlat",               # "lonlat" (degrees) or "xy" (planar units)
+    "min_clearance": 0,                          # also conflict if closer than this (km, or xy units)
+    "embedding": false,                          # report a compact heavy-hex qubit layout
+    "include_circuit": true,                     # return the QAOA circuit
+    "circuit_formats": ["qasm3"]                 # any of "qasm3", "qasm2", "qasm3_parameterized"
   }
 }
 
-Output (stdout, JSON): status, connected, total_cost, total_value, budget,
-graph {nodes, edges (with stage = quantum | connector | extra)}, quantum stats incl. the QUBO.
-Exit code: 0 = ok, 2 = infeasible, 1 = invalid input / internal error.
+Conflict detection (auto_conflicts): every path is the straight segment between its two cities.
+Two paths conflict ("intertwined") when their segments
+  crossing   cross at a point that is not a shared city,
+  touching   meet where one path's end city lies inside the other path,
+  overlap    run along the same line for a positive length (also when they share a city),
+  too_close  pass closer than min_clearance without sharing a city (only if min_clearance > 0).
+Paths that only meet at a shared city are NOT in conflict (that is a normal junction).
+
+Output (JSON, compact: small objects on one line; --format pretty|min to change):
+  status, connected, total_cost, total_value, remaining_budget, cost_breakdown, budget,
+  conflicts  [{paths, type, at}] detected (and manual) conflict pairs,
+  graph      {nodes, edges (stage = quantum | connector | extra)},
+  quantum    QAOA statistics and intermediate results:
+    variables  x_i -> route id, s_k -> slack weight (qubit i holds variable i)
+    penalties  lam, mu, slack weights, lam_ladder {lam: energy minimum feasible?}
+    qubo       offset, linear, quadratic, formula (compact / expanded / LaTeX), energy_range
+    ising      constant, scale, h, J, formula (plain / LaTeX); y_i = (1 - Z_i)/2
+    angles     gammas, betas (layer 1 first) and every optimiser start
+    circuit    size statistics and OpenQASM with the optimised angles
+    execution  (IBM runs only) backend, job_id, physical qubits, compiled depth / two-qubit gates,
+               estimated success, layout method, status, quantum_seconds
+
+Running on IBM Quantum hardware (options.execution = "ibm"):
+  * credentials never go in the input JSON. Put them in a .env file next to this script (or in the
+    current folder, or pass --env-file PATH), or set them as environment variables (Kubernetes Secret):
+      IBM_QUANTUM_TOKEN=<IBM Cloud API key>   IBM_QUANTUM_INSTANCE=<instance CRN>
+    (optional IBM_QUANTUM_CHANNEL, default "ibm_quantum_platform"); real environment variables win
+    over the .env file. Needs pip qiskit-ibm-runtime.
+  * the angles are trained on the exact local simulator; only the final circuit runs on the QPU
+    (one job, ibm_shots shots), and its samples choose the quantum routes
+  * the job id is printed to stderr right after submission; if the wait exceeds ibm_timeout the
+    status is "pending" (exit 3): rerun with the same input plus options.ibm_job_id to collect it
+  * execution = "ibm_fake" runs the same path on a local noisy copy of a device (e.g. FakeTorino)
+    without credentials, for testing
+Exit code: 0 = ok, 2 = infeasible, 3 = IBM job still pending, 1 = invalid input / internal error.
 """
 from __future__ import annotations
 
@@ -53,8 +89,22 @@ log = logging.getLogger("railway_planner")
 DEFAULT_OPTIONS = dict(
     quantum_fraction=0.8, qaoa_depth=2, shots=2048, seed=2026, max_qubits=16,
     restarts=6, maxiter=300, use_leftover_for_value=True,
-    auto_conflicts_from_crossings=False, embedding=False,
+    auto_conflicts=True, coordinate_system="lonlat", min_clearance=0.0,
+    embedding=False, include_circuit=True, circuit_formats=["qasm3"],
+    # ---- where the final circuit is sampled
+    execution="simulator",            # "simulator" | "ibm" (real QPU) | "ibm_fake" (local noisy copy)
+    ibm_backend="",                   # e.g. "ibm_torino"; empty = least busy device that fits
+    ibm_shots=None,                   # default: same as "shots"
+    ibm_layout="best",                # "best" | "auto" | "compact"  (best = highest estimated success)
+    ibm_optimization_level=3,
+    ibm_dynamical_decoupling=True,
+    ibm_twirling=False,
+    ibm_timeout=3600,                 # seconds to wait for the job result
+    ibm_job_id="",                    # fetch an already submitted job instead of submitting a new one
+    ibm_fallback=False,               # on IBM failure/timeout: use (clearly labelled) simulator samples
 )
+CIRCUIT_FORMATS = {"qasm3", "qasm2", "qasm3_parameterized"}
+EXECUTIONS = {"simulator", "ibm", "ibm_fake"}
 
 
 class InputError(ValueError):
@@ -127,23 +177,108 @@ def parse_input(data: dict):
         conflicts.add(frozenset((a, b)))
 
     opts = dict(DEFAULT_OPTIONS)
-    opts.update(data.get("options", {}) or {})
+    user_opts = dict(data.get("options", {}) or {})
+    if "auto_conflicts_from_crossings" in user_opts:          # old option name
+        user_opts.setdefault("auto_conflicts", user_opts.pop("auto_conflicts_from_crossings"))
+    opts.update(user_opts)
     if not 0 <= float(opts["quantum_fraction"]) <= 1:
         raise InputError("quantum_fraction must be between 0 and 1")
+    if opts["coordinate_system"] not in ("lonlat", "xy"):
+        raise InputError("coordinate_system must be 'lonlat' or 'xy'")
+    if float(opts["min_clearance"]) < 0:
+        raise InputError("min_clearance must be non-negative")
+    if not set(opts["circuit_formats"]) <= CIRCUIT_FORMATS:
+        raise InputError(f"circuit_formats must be a subset of {sorted(CIRCUIT_FORMATS)}")
+    if opts["execution"] not in EXECUTIONS:
+        raise InputError(f"execution must be one of {sorted(EXECUTIONS)}")
+    if opts["ibm_layout"] not in ("best", "auto", "compact"):
+        raise InputError("ibm_layout must be 'best', 'auto' or 'compact'")
+    if any(k in user_opts for k in ("token", "api_key", "ibm_token", "crn", "instance")):
+        raise InputError("Do not put IBM credentials in the input; set the IBM_QUANTUM_TOKEN and "
+                         "IBM_QUANTUM_INSTANCE environment variables instead")
     return budget, nodes, paths, conflicts, opts
 
 
-def crossing_conflicts(nodes, paths):
-    """Pairs of paths whose straight segments properly cross (no shared endpoint)."""
-    def orient(a, b, c):
-        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    out = set()
-    for p, q in combinations(paths, 2):
-        if len({p["u"], p["v"], q["u"], q["v"]}) < 4:
-            continue
-        A, B, C, D = nodes[p["u"]], nodes[p["v"]], nodes[q["u"]], nodes[q["v"]]
-        if orient(A, B, C) * orient(A, B, D) < 0 and orient(C, D, A) * orient(C, D, B) < 0:
-            out.add(frozenset((p["id"], q["id"])))
+# --------------------------------------------------------------------------- geometric conflicts
+EARTH_RADIUS_KM = 6371.0
+
+
+def detect_conflicts(nodes, paths, system="lonlat", clearance=0.0):
+    """Conflict pairs found from the geometry of the straight path segments.
+
+    lon/lat is mapped to km with an equirectangular projection around the mean latitude. That map
+    is affine, so crossing/touching/overlap results are identical to testing in lon/lat directly;
+    distances (min_clearance) are accurate to well under 1 % at country scale.
+    Runs in O(m^2) for m paths, vectorised one row at a time (a few thousand paths is fine).
+    Returns [{"paths": [id_a, id_b], "type": ..., "at": [lon, lat] | "distance_km": d}, ...]."""
+    m = len(paths)
+    if m < 2:
+        return []
+    names = list(nodes)
+    idx = {k: i for i, k in enumerate(names)}
+    P = np.array([nodes[k] for k in names], float)
+    if system == "lonlat":
+        kx = np.cos(np.deg2rad(P[:, 1].mean())) * np.deg2rad(1) * EARTH_RADIUS_KM   # km per degree lon
+        ky = np.deg2rad(1) * EARTH_RADIUS_KM                                         # km per degree lat
+    else:
+        kx = ky = 1.0
+    XY = P * np.array([kx, ky])
+    back = lambda pt: [round(float(pt[0] / kx), 6), round(float(pt[1] / ky), 6)]
+    dist_key = "distance_km" if system == "lonlat" else "distance"
+
+    ui = np.array([idx[p["u"]] for p in paths]); vi = np.array([idx[p["v"]] for p in paths])
+    A, B = XY[ui], XY[vi]
+    D = B - A
+    L = np.hypot(D[:, 0], D[:, 1])
+    eps = 1e-9 * max(float(np.ptp(XY, axis=0).max()), 1e-12)        # length tolerance
+    cross = lambda u, w: u[..., 0] * w[..., 1] - u[..., 1] * w[..., 0]
+    sgn = lambda o: np.where(np.abs(o) <= eps, 0, np.sign(o))
+
+    def point_seg_dist(p, a, b):
+        ab = b - a
+        t = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-300), 0, 1)
+        return np.hypot(*(p - (a + t[:, None] * ab)).T)
+
+    out = []
+    for i in range(m - 1):
+        j = np.arange(i + 1, m)
+        a, b, d, Li = A[i], B[i], D[i], L[i]
+        c, e, f, Lj = A[j], B[j], D[j], L[j]
+        shared = (ui[j] == ui[i]) | (ui[j] == vi[i]) | (vi[j] == ui[i]) | (vi[j] == vi[i])
+        # signed distances: c, e from line ab and a, b from line ce
+        o1, o2 = cross(d, c - a) / Li, cross(d, e - a) / Li
+        o3, o4 = cross(f, a - c) / Lj, cross(f, b - c) / Lj
+        s1, s2, s3, s4 = sgn(o1), sgn(o2), sgn(o3), sgn(o4)
+        # positions along the other segment (length units)
+        tc, te = (c - a) @ d / Li, (e - a) @ d / Li
+        ta, tb = np.einsum("ij,ij->i", a - c, f) / Lj, np.einsum("ij,ij->i", b - c, f) / Lj
+        collinear = (s1 == 0) & (s2 == 0)
+        lo, hi = np.maximum(0, np.minimum(tc, te)), np.minimum(Li, np.maximum(tc, te))
+        overlap = collinear & (hi - lo > eps)
+        crossing = (s1 * s2 < 0) & (s3 * s4 < 0)
+        inside = lambda s, t, Ls: (s == 0) & (t > eps) & (t < Ls - eps)
+        touching = (inside(s1, tc, Li) | inside(s2, te, Li) | inside(s3, ta, Lj) | inside(s4, tb, Lj)) \
+            & ~collinear & ~shared & ~crossing
+        flagged = overlap | crossing | touching
+        if clearance > 0:
+            dist = np.minimum.reduce([point_seg_dist(c, np.broadcast_to(a, c.shape), np.broadcast_to(b, c.shape)),
+                                      point_seg_dist(e, np.broadcast_to(a, c.shape), np.broadcast_to(b, c.shape)),
+                                      point_seg_dist(np.broadcast_to(a, c.shape), c, e),
+                                      point_seg_dist(np.broadcast_to(b, c.shape), c, e)])
+            close = ~shared & ~flagged & (dist < clearance)
+        else:
+            close = np.zeros(len(j), bool)
+        for k in np.flatnonzero(flagged | close):
+            pair = [paths[i]["id"], paths[j[k]]["id"]]
+            if overlap[k]:
+                rec = dict(paths=pair, type="overlap", at=back(a + d / Li * (lo[k] + hi[k]) / 2))
+            elif crossing[k] or touching[k]:
+                t = o1[k] / (o1[k] - o2[k])                       # where line ce meets line ab
+                rec = dict(paths=pair, type="crossing" if crossing[k] else "touching",
+                           at=back(c[k] + t * f[k]))
+            else:
+                rec = {"paths": pair, "type": "too_close", dist_key: round(float(dist[k]), 3)}
+            out.append(rec)
     return out
 
 
@@ -272,11 +407,11 @@ def qaoa_circuit(ising, angles, measure=True):
         gamma, beta = angles[2 * layer], angles[2 * layer + 1]
         for i in range(n):
             if not np.isclose(h[i], 0):
-                qc.rz(2 * gamma * h[i] / scale, i)
+                qc.rz(2 * gamma * float(h[i]) / scale, i)
         for i in range(n):
             for j in range(i + 1, n):
                 if not np.isclose(J[i, j], 0):
-                    qc.rzz(2 * gamma * J[i, j] / scale, i, j)
+                    qc.rzz(2 * gamma * float(J[i, j]) / scale, i, j)
         for i in range(n):
             qc.rx(2 * beta, i)
     if measure:
@@ -342,10 +477,13 @@ def run_quantum_stage(paths, conflicts, budget, opts):
     mu = float(max(values) + 1)
     lam_safe = float(sum(values) + 1)
     lam = lam_safe
+    ladder = []
     for trial in [0.25, 0.5, 1, 2, 3, 5, 8, 13, 21, lam_safe]:
         q = build_qubo(costs_int, values, conf_idx, bq_int, slack, trial, mu)
         E = qubo_energies(q, Y)
-        if feasible_state[np.isclose(E, E.min())].all():
+        ok = bool(feasible_state[np.isclose(E, E.min())].all())
+        ladder.append(dict(lam=float(trial), energy_minimum_feasible=ok))
+        if ok:
             lam = float(trial)
             break
     qubo = build_qubo(costs_int, values, conf_idx, bq_int, slack, lam, mu)
@@ -356,19 +494,30 @@ def run_quantum_stage(paths, conflicts, budget, opts):
     p_depth = int(opts["qaoa_depth"])
     def objective(angles):
         return float(qaoa_probabilities(angles, E, n, scale) @ E)
-    starts = []
+    starts, kinds = [], []
     for dt in (0.02, 0.05, 0.1):
         k = np.arange(1, p_depth + 1) / (p_depth + 1)
         x = np.empty(2 * p_depth); x[0::2] = 4 * dt * k; x[1::2] = 12 * dt * (1 - k); starts.append(x)
+        kinds.append(f"ramp dt={dt}")
     for _ in range(max(0, int(opts["restarts"]) - 3)):
         x = np.empty(2 * p_depth); x[0::2] = rng.uniform(0, .3, p_depth)
         x[1::2] = rng.uniform(0, np.pi / 2, p_depth); starts.append(x)
-    best = min((minimize(objective, s, method="COBYLA",
-                         options={"maxiter": int(opts["maxiter"]), "rhobeg": .1}) for s in starts),
-               key=lambda r: r.fun)
-    angles = np.asarray(best.x, float)
+        kinds.append("random")
+    runs = [minimize(objective, s, method="COBYLA",
+                     options={"maxiter": int(opts["maxiter"]), "rhobeg": .1}) for s in starts]
+    best_idx = int(np.argmin([r.fun for r in runs]))
+    angles = np.asarray(runs[best_idx].x, float)
     probs = qaoa_probabilities(angles, E, n, scale)
-    counts, sampler = sample_counts(ising, angles, probs, int(opts["shots"]), int(opts["seed"]))
+    execution = None
+    if opts["execution"] == "simulator":
+        counts, sampler = sample_counts(ising, angles, probs, int(opts["shots"]), int(opts["seed"]))
+    else:
+        counts, sampler, execution = run_on_ibm(ising, angles, probs, opts)
+        if counts is None:            # pending / failed without fallback: stop the quantum stage here
+            raise HardwareNotReady(execution)
+        if execution.get("fallback_used"):
+            notes.append("IBM execution failed or timed out; samples come from the local SIMULATOR "
+                         "(see quantum.execution.error).")
 
     shots = sum(counts.values())
     feas_samples = [(c, k) for k, c in counts.items() if feasible_state[k]]
@@ -379,8 +528,7 @@ def run_quantum_stage(paths, conflicts, budget, opts):
     opt_val = float(value_state[feasible_state].max())
     names = [f"x{i}" for i in range(nr)] + [f"s{k}" for k in range(ns)]
     stats = dict(
-        sampler=sampler, qubits=n, route_qubits=nr, slack_qubits=ns, depth=p_depth,
-        quantum_budget=bq, cost_unit_scale=unit, lam=lam, mu=mu, angles=angles.tolist(),
+        sampler=sampler, qubits=n, route_qubits=nr, slack_qubits=ns, layers=p_depth, quantum_budget=bq,
         expected_energy=float(probs @ E),
         p_feasible_uniform=float(feasible_state.mean()),
         p_feasible_qaoa=float(probs[feasible_state].sum()),
@@ -388,40 +536,280 @@ def run_quantum_stage(paths, conflicts, budget, opts):
         best_sampled_value=float(sum(p["value"] for p in cand if p["id"] in chosen)),
         exact_optimum_value=opt_val,
         variables={**{f"x{i}": p["id"] for i, p in enumerate(cand)},
-                   **{f"s{k}": f"slack weight {w}" for k, w in enumerate(slack)}},
-        qubo=dict(variables=names, offset=float(qubo["offset"]),
-                  linear={names[i]: float(c) for i, c in enumerate(qubo["linear"]) if c != 0},
-                  quadratic={f"{names[i]}*{names[j]}": float(qubo["quadratic"][i, j])
-                             for i in range(n) for j in range(i + 1, n) if qubo["quadratic"][i, j] != 0}),
+                   **{f"s{k}": f"slack {w}" for k, w in enumerate(slack)}},
     )
+    if execution is not None:
+        stats["execution"] = execution
+    stats.update(intermediate_results(
+        cand, costs_int, values, slack, unit, bq_int, conf_idx, names, qubo, ising, scale,
+        lam, mu, ladder, angles, starts, kinds, runs, best_idx, E, opts))
     if opts.get("embedding"):
         stats["embedding"] = compact_embedding(ising, angles, int(opts["seed"]))
     return chosen, stats, notes
 
 
-# --------------------------------------------------------------------------- optional embedding
-def compact_embedding(ising, angles, seed, iters=3000):
-    """Pick the tightest connected patch on a 57-qubit heavy-hex map and route inside it."""
+# --------------------------------------------------------------------------- intermediate results
+def _num(c):
+    return f"{float(c):.10g}"
+
+
+def _poly(terms, latex=False):
+    """Sum of (coefficient, symbol) terms as text, e.g. '3 x0 - 2 x1 + x2'. Zero terms are skipped."""
+    parts = []
+    for c, sym in terms:
+        if np.isclose(c, 0):
+            continue
+        mag = abs(float(c))
+        coef = "" if np.isclose(mag, 1) else _num(mag)
+        body = f"{coef}{'' if latex or not coef else ' '}{sym}"
+        parts.append(("- " if c < 0 else "+ ") + body)
+    if not parts:
+        return "0"
+    txt = " ".join(parts)
+    return txt[2:] if txt.startswith("+ ") else "-" + txt[2:]
+
+
+def _with_constant(const, poly):
+    """'const + poly' with the sign of the first term written out, e.g. '288 - 92 x0 + ...'."""
+    if poly == "0":
+        return _num(const)
+    return f"{_num(const)} - {poly[1:]}" if poly.startswith("-") else f"{_num(const)} + {poly}"
+
+
+def _tex(name):            # 'x10' -> 'x_{10}'
+    return f"{name[0]}_{{{name[1:]}}}"
+
+
+def intermediate_results(cand, costs_int, values, slack, unit, bq_int, conf_idx, names, qubo, ising,
+                         scale, lam, mu, ladder, angles, starts, kinds, runs, best_idx, E, opts):
+    """Everything between the input and the chosen routes: penalties, QUBO, Ising, angles, circuit."""
+    n, nr = len(names), len(cand)
+    lin, quad = qubo["linear"], qubo["quadratic"]
+    h, J, const = ising["h"], ising["J"], ising["constant"]
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    xs, ss = names[:nr], names[nr:]
+
+    # ---- penalties: lam = smallest ladder value whose energy minima are all feasible; mu = max value + 1
+    penalties = dict(
+        lam=lam, mu=mu, slack_weights=list(slack), quantum_budget_units=bq_int, cost_unit_scale=unit,
+        lam_ladder={_num(r["lam"]): r["energy_minimum_feasible"] for r in ladder},
+    )
+
+    # ---- QUBO
+    value_txt = _poly([(v, x) for v, x in zip(values, xs)])
+    budget_txt = _poly([(c, x) for c, x in zip(costs_int, xs)] + [(w, s) for w, s in zip(slack, ss)])
+    conf_txt = " + ".join(f"{names[i]}*{names[j]}" for i, j in conf_idx) or "0"
+    value_tex = _poly([(v, _tex(x)) for v, x in zip(values, xs)], latex=True)
+    budget_tex = _poly([(c, _tex(x)) for c, x in zip(costs_int, xs)] +
+                       [(w, _tex(s)) for w, s in zip(slack, ss)], latex=True)
+    conf_tex = " + ".join(f"{_tex(names[i])}{_tex(names[j])}" for i, j in conf_idx) or "0"
+    expanded = _poly([(lin[i], names[i]) for i in range(n)] +
+                     [(quad[i, j], f"{names[i]}*{names[j]}") for i, j in pairs])
+    qubo_out = dict(
+        offset=float(qubo["offset"]),
+        linear={names[i]: float(lin[i]) for i in range(n) if lin[i] != 0},
+        quadratic={f"{names[i]}*{names[j]}": float(quad[i, j]) for i, j in pairs if quad[i, j] != 0},
+        formula=(f"E = -({value_txt}) + {_num(lam)}*({budget_txt} - {bq_int})^2"
+                 f" + {_num(mu)}*({conf_txt})"),
+        formula_expanded="E = " + _with_constant(qubo["offset"], expanded),
+        formula_latex=(r"E(x,s) = -\left(" + value_tex + r"\right) + " + _num(lam) + r"\left(" +
+                       budget_tex + f" - {bq_int}" + r"\right)^2 + " + _num(mu) + r"\left(" +
+                       conf_tex + r"\right)"),
+        energy_range=[float(E.min()), float(E.max())],
+    )
+
+    # ---- Ising (Z|0> = +|0>, y_i = (1 - Z_i)/2; the circuit applies exp(-i*gamma*(H - constant)/scale))
+    hj = _poly([(h[i], f"Z{i}") for i in range(n)] + [(J[i, j], f"Z{i}*Z{j}") for i, j in pairs])
+    hj_tex = _poly([(h[i], f"Z_{{{i}}}") for i in range(n)] +
+                   [(J[i, j], f"Z_{{{i}}}Z_{{{j}}}") for i, j in pairs], latex=True)
+    ising_out = dict(
+        constant=float(const), scale=float(scale),
+        h={f"Z{i}": float(h[i]) for i in range(n) if not np.isclose(h[i], 0)},
+        J={f"Z{i}*Z{j}": float(J[i, j]) for i, j in pairs if not np.isclose(J[i, j], 0)},
+        formula="H = " + _with_constant(const, hj),
+        formula_latex="H = " + _with_constant(const, hj_tex),
+    )
+
+    # ---- angles (layer 1 acts first; RZ(2*gamma*h/scale), RZZ(2*gamma*J/scale), RX(2*beta))
+    p = len(angles) // 2
+    r6 = lambda v: [round(float(a), 6) for a in v]
+    angles_out = dict(
+        gammas=[float(a) for a in angles[0::2]], betas=[float(a) for a in angles[1::2]],
+        optimizer=dict(method="COBYLA", rhobeg=0.1, maxiter=int(opts["maxiter"])),
+        starts=[dict(kind=kinds[k], selected=(k == best_idx),
+                     energy=round(float(runs[k].fun), 6), evaluations=int(runs[k].nfev),
+                     start_gammas=r6(starts[k][0::2]), start_betas=r6(starts[k][1::2]),
+                     final_gammas=r6(runs[k].x[0::2]), final_betas=r6(runs[k].x[1::2]))
+                for k in range(len(starts))],
+    )
+
+    # ---- circuit
+    circuit_out = None
+    if opts.get("include_circuit", True):
+        try:
+            from qiskit import qasm2, qasm3
+            from qiskit.circuit import Parameter
+            bound = qaoa_circuit(ising, angles, measure=True)
+            circuit_out = dict(
+                num_qubits=bound.num_qubits, depth=int(bound.depth()),
+                two_qubit_gates=int(sum(i.operation.num_qubits == 2 for i in bound.data
+                                        if i.operation.name != "barrier")),
+                gate_counts={k: int(v) for k, v in bound.count_ops().items()},
+                bit_order=f"rightmost measured bit = q[0] = {names[0]}; q[i] holds variable i",
+            )
+            formats = list(opts.get("circuit_formats") or ["qasm3"])
+            if "qasm3" in formats:
+                circuit_out["qasm3"] = qasm3.dumps(bound)
+            if "qasm2" in formats:   # rzz written as cx-rz-cx so strict qelib1.inc parsers accept it
+                circuit_out["qasm2"] = qasm2.dumps(bound.decompose(gates_to_decompose=["rzz"]))
+            if "qasm3_parameterized" in formats:
+                symbols = [Parameter(f"{'gamma' if k % 2 == 0 else 'beta'}_{k // 2 + 1}") for k in range(2 * p)]
+                circuit_out["qasm3_parameterized"] = qasm3.dumps(qaoa_circuit(ising, symbols, measure=True))
+        except Exception as exc:   # qiskit missing or export failed: keep the rest of the output
+            circuit_out = dict(error=f"circuit export unavailable: {exc}")
+    return dict(penalties=penalties, qubo=qubo_out, ising=ising_out, angles=angles_out,
+                circuit=circuit_out)
+
+
+# --------------------------------------------------------------------------- IBM Quantum hardware
+class HardwareNotReady(Exception):
+    """The IBM job is still queued/running (status 'pending') or failed without fallback."""
+    def __init__(self, info):
+        super().__init__(info.get("error", "IBM execution did not return a result"))
+        self.info = info
+
+
+def _secret_safe(exc, secrets):
+    msg = f"{type(exc).__name__}: {exc}"
+    for s in secrets:
+        if s:
+            msg = msg.replace(s, "***")
+    return msg[:500]
+
+
+ENV_PLACEHOLDERS = ("paste-your", "your-api-key", "your-crn", "<", "xxx")
+
+
+def load_env_file(path=None):
+    """Load KEY=VALUE lines from a .env file into os.environ (no extra package needed).
+
+    Search order: the given path, ./.env (current folder), .env next to this script.
+    Variables that are already set (e.g. from a Kubernetes Secret) are NOT overwritten.
+    Returns the file that was loaded, or None. Values are never printed."""
+    import os
+    from pathlib import Path
+    candidates = [Path(path)] if path else [Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"]
+    for f in candidates:
+        if not f.is_file():
+            continue
+        for raw in f.read_text(encoding="utf-8-sig").splitlines():      # utf-8-sig: Notepad BOM
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip().removeprefix("export ").strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            elif " #" in value:                                         # inline comment
+                value = value.split(" #", 1)[0].rstrip()
+            if key and value and key not in os.environ:
+                os.environ[key] = value
+        return f
+    if path:
+        raise InputError(f"env file not found: {path}")
+    return None
+
+
+def ibm_service():
+    """Credentials come only from the environment (e.g. a Kubernetes Secret) or a .env file next to
+    the script (see load_env_file), never from the input JSON.
+
+    IBM_QUANTUM_TOKEN     IBM Cloud API key           (QISKIT_IBM_TOKEN also accepted)
+    IBM_QUANTUM_INSTANCE  instance CRN                (QISKIT_IBM_INSTANCE also accepted)
+    IBM_QUANTUM_CHANNEL   optional, default "ibm_quantum_platform"."""
+    import os
+    token = os.environ.get("IBM_QUANTUM_TOKEN") or os.environ.get("QISKIT_IBM_TOKEN")
+    instance = os.environ.get("IBM_QUANTUM_INSTANCE") or os.environ.get("QISKIT_IBM_INSTANCE")
+    channel = os.environ.get("IBM_QUANTUM_CHANNEL", "ibm_quantum_platform")
+    hint = " (put it in the .env file next to the script, or set the environment variable)"
+    if not token:
+        raise RuntimeError("IBM_QUANTUM_TOKEN is not set" + hint)
+    if not instance:
+        raise RuntimeError("IBM_QUANTUM_INSTANCE (the CRN) is not set" + hint)
+    if any(p in token.lower() for p in ENV_PLACEHOLDERS) or any(p in instance.lower() for p in ENV_PLACEHOLDERS):
+        raise RuntimeError("the .env file still contains the placeholder text - paste your real API key and CRN")
+    if not instance.startswith("crn:"):
+        raise RuntimeError("IBM_QUANTUM_INSTANCE must be the instance CRN (it starts with 'crn:v1:')")
+    from qiskit_ibm_runtime import QiskitRuntimeService
+    try:
+        return QiskitRuntimeService(channel=channel, token=token, instance=instance), (token, instance)
+    except Exception as exc:
+        raise RuntimeError("could not connect to IBM Quantum - check the API key, the CRN and that the pod "
+                           "can reach quantum.cloud.ibm.com / iam.cloud.ibm.com over HTTPS ("
+                           + _secret_safe(exc, (token, instance)) + ")") from None
+
+
+def estimated_success(isa, target):
+    """Product of (1 - error) over all gates and measurements, from the backend calibration."""
+    p = 1.0
+    for inst in isa.data:
+        name = inst.operation.name
+        if name in ("barrier", "delay") or name not in target.operation_names:
+            continue
+        props = target[name].get(tuple(isa.find_bit(q).index for q in inst.qubits))
+        if props is not None and props.error:
+            p *= 1 - props.error
+    return p
+
+
+def healthy_edges(backend, max_error=0.1):
+    """Coupling edges whose two-qubit gate and both qubits' readout / single-qubit errors are
+    below max_error, so the compact patch avoids broken or very noisy qubits."""
+    t = backend.target
+    def err(op, qargs):
+        if op not in t.operation_names:
+            return 0.0
+        props = t[op].get(qargs)
+        return props.error if props is not None and props.error is not None else 0.0
+    bad = {q for q in range(backend.num_qubits)
+           if max(err("measure", (q,)), err("sx", (q,)), err("x", (q,))) >= max_error}
+    twoq = [g for g in ("cz", "ecr", "cx") if g in t.operation_names]
+    edges = set()
+    for a, b in backend.coupling_map.get_edges():
+        if a in bad or b in bad:
+            continue
+        if all(err(g, (a, b)) < max_error for g in twoq if (a, b) in (t[g] or {})):
+            edges.add((min(a, b), max(a, b)))
+    return sorted(edges)
+
+
+def _two_qubit(circ):
+    return int(sum(i.operation.num_qubits == 2 for i in circ.data if i.operation.name != "barrier"))
+
+
+def compact_patch(edges, n, pairs, seed, iters=3000, n_starts=4):
+    """Connected set of n physical qubits minimising extra hops between interacting variables
+    (simulated annealing). edges: coupling-map edges; pairs: interacting variable pairs."""
     import networkx as nx
-    from qiskit import transpile
-    from qiskit.transpiler import CouplingMap
-    n = len(ising["h"])
-    cmap = CouplingMap.from_heavy_hex(5)
-    G = nx.Graph(); G.add_edges_from(cmap.get_edges())
+    G = nx.Graph(); G.add_edges_from(edges)
     hop = dict(nx.all_pairs_shortest_path_length(G))
-    pairs = [(i, j) for i in range(n) for j in range(i + 1, n) if not np.isclose(ising["J"][i, j], 0)]
     spread = lambda lay: sum(hop[lay[i]][lay[j]] - 1 for i, j in pairs)
     rng = np.random.default_rng(seed)
     best = None
-    for start in rng.choice(cmap.size(), 4, replace=False):
-        lay = list(nx.bfs_tree(G, int(start)))[:n]; c = spread(lay); T = 5.0
-        cur_best = (c, lay[:])
+    for start in rng.choice(sorted(G.nodes), min(n_starts, G.number_of_nodes()), replace=False):
+        lay = list(nx.bfs_tree(G, int(start)))[:n]
+        if len(lay) < n:
+            continue
+        c = spread(lay); T = 5.0; cur_best = (c, lay[:])
         for _ in range(iters):
             T *= 0.999; new = lay[:]
             if rng.random() < .5:
                 i, j = rng.choice(n, 2, replace=False); new[i], new[j] = new[j], new[i]
             else:
                 used = set(lay); cand = [q for u in lay for q in G[u] if q not in used]
+                if not cand:
+                    continue
                 new[rng.integers(n)] = cand[rng.integers(len(cand))]
             if not nx.is_connected(G.subgraph(new)):
                 continue
@@ -432,7 +820,150 @@ def compact_embedding(ising, angles, seed, iters=3000):
                     cur_best = (c, lay[:])
         if best is None or cur_best[0] < best[0]:
             best = cur_best
-    patch = sorted(int(q) for q in best[1])
+    return sorted(int(q) for q in best[1]), int(best[0])
+
+
+def compile_for_backend(bound, ising, backend, opts):
+    """Transpile the bound circuit to the device ISA. 'auto' = Qiskit's preset pass manager (a few
+    seeds); 'compact' = route inside the tightest qubit patch; 'best' = all, keep the highest
+    estimated success probability."""
+    from qiskit import transpile
+    from qiskit.transpiler import generate_preset_pass_manager
+    level, seed, mode = int(opts["ibm_optimization_level"]), int(opts["seed"]), opts["ibm_layout"]
+    target = backend.target
+    cands = []
+    if mode in ("auto", "best"):
+        for s in range(3):
+            isa = generate_preset_pass_manager(optimization_level=level, backend=backend,
+                                               seed_transpiler=seed + s).run(bound)
+            cands.append(("auto", isa))
+    if mode in ("compact", "best") and backend.coupling_map is not None:
+        try:
+            n = bound.num_qubits
+            pairs = [(i, j) for i in range(n) for j in range(i + 1, n) if not np.isclose(ising["J"][i, j], 0)]
+            patch, _ = compact_patch(healthy_edges(backend), n, pairs, seed, iters=1500, n_starts=3)
+            basis = [g for g in backend.operation_names if g in {"id", "rz", "sx", "x", "cx", "ecr", "cz"}]
+            local = transpile(bound, coupling_map=backend.coupling_map.reduce(patch), basis_gates=basis,
+                              optimization_level=level, seed_transpiler=seed)
+            layout = [patch[local.layout.initial_layout[q]] for q in bound.qubits]
+            isa = generate_preset_pass_manager(optimization_level=level, backend=backend,
+                                               seed_transpiler=seed, initial_layout=layout).run(bound)
+            cands.append(("compact", isa))
+        except Exception as exc:      # e.g. networkx missing: keep the preset-pass-manager result
+            log.warning("compact layout skipped: %s", exc)
+            if not cands:
+                raise
+    scored = [(estimated_success(isa, target), kind, isa) for kind, isa in cands]
+    esp, kind, isa = max(scored, key=lambda t: t[0])
+    layout = [isa.layout.initial_layout[q] for q in bound.qubits] if isa.layout else list(range(bound.num_qubits))
+    info = dict(layout_method=kind, physical_qubits=[int(q) for q in layout], isa_depth=int(isa.depth()),
+                isa_two_qubit_gates=_two_qubit(isa), estimated_success=float(esp),
+                candidates={f"{k}#{i}": dict(two_qubit_gates=_two_qubit(c), estimated_success=float(e))
+                            for i, (e, k, c) in enumerate(scored)})
+    return isa, info
+
+
+def _counts_from_result(pub_result, n):
+    reg = pub_result.data.meas                       # measure_all() names the register "meas"
+    if reg.num_bits != n:
+        raise RuntimeError(f"job measured {reg.num_bits} bits, expected {n}: different input/circuit?")
+    counts = {}
+    for key, c in reg.get_counts().items():
+        k = int(key.replace(" ", ""), 2)             # rightmost bit = qubit 0 = variable 0
+        counts[k] = counts.get(k, 0) + int(c)
+    return counts
+
+
+def run_on_ibm(ising, angles, probs, opts):
+    """Run the bound QAOA circuit on an IBM backend (or a local noisy fake) and return its counts.
+
+    Returns (counts, sampler_label, execution_info). counts is None when the job is still pending
+    or failed and ibm_fallback is false."""
+    from datetime import datetime, timezone
+    n = len(ising["h"])
+    real = opts["execution"] == "ibm"
+    shots = int(opts["ibm_shots"] or (opts["shots"] if real else 128))   # fake mode: ~0.4 s per shot
+    info = dict(mode=opts["execution"], shots=shots, status="starting")
+    secrets = ()
+    try:
+        from qiskit_ibm_runtime import SamplerV2
+        bound = qaoa_circuit(ising, angles, measure=True)
+        if real:
+            service, secrets = ibm_service()
+            if opts["ibm_job_id"]:                                    # recover an existing job
+                job = service.job(opts["ibm_job_id"])
+                info.update(backend=job.backend().name, job_id=job.job_id(), recovered=True)
+            else:
+                if opts["ibm_backend"]:
+                    backend = service.backend(opts["ibm_backend"])
+                    if backend.num_qubits < n or not backend.status().operational:
+                        raise RuntimeError(f"{backend.name} is not operational or has fewer than {n} qubits")
+                else:
+                    backend = service.least_busy(min_num_qubits=n, operational=True, simulator=False)
+                info["backend"] = backend.name
+        else:
+            from qiskit_ibm_runtime import fake_provider
+            name = opts["ibm_backend"] or "FakeTorino"
+            if not name.startswith("Fake") or not hasattr(fake_provider, name):
+                raise RuntimeError(f"unknown fake backend {name!r} (e.g. FakeTorino, FakeFez, FakeBrisbane)")
+            backend = getattr(fake_provider, name)()
+            info["backend"] = f"{name} (local noisy simulation, not a real QPU)"
+
+        if not info.get("recovered"):
+            isa, compile_info = compile_for_backend(bound, ising, backend, opts)
+            info.update(compile_info)
+            sampler = SamplerV2(mode=backend)
+            sampler.options.default_shots = shots
+            if real:
+                sampler.options.dynamical_decoupling.enable = bool(opts["ibm_dynamical_decoupling"])
+                sampler.options.twirling.enable_gates = bool(opts["ibm_twirling"])
+            info.update(dynamical_decoupling=bool(opts["ibm_dynamical_decoupling"]) and real,
+                        twirling=bool(opts["ibm_twirling"]) and real)
+            job = sampler.run([isa], shots=shots)
+            info.update(job_id=job.job_id(), submitted_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            # printed immediately (stderr) so the id survives a pod restart; recover with ibm_job_id
+            print(f"IBM job submitted: backend={info['backend']} job_id={info['job_id']}", file=sys.stderr, flush=True)
+
+        info["status"] = "waiting"
+        try:
+            result = job.result(timeout=float(opts["ibm_timeout"]))
+        except TypeError:                                             # local-mode jobs take no timeout
+            result = job.result()
+        counts = _counts_from_result(result[0], n)
+        info["status"] = "done"
+        try:
+            usage = job.metrics().get("usage", {})
+            if usage:
+                info["quantum_seconds"] = usage.get("quantum_seconds", usage.get("seconds"))
+        except Exception:
+            pass
+        label = "ibm-qpu" if real else "ibm-fake-noisy-simulator"
+        return counts, label, info
+    except Exception as exc:
+        timed_out = "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower()
+        info.update(status="pending" if timed_out and info.get("job_id") else "failed",
+                    error=_secret_safe(exc, secrets))
+        if timed_out and info.get("job_id"):
+            info["error"] += f" | the job keeps running on IBM: rerun with options.ibm_job_id = {info['job_id']!r}"
+        if not opts["ibm_fallback"]:
+            return None, None, info
+        info["fallback_used"] = True
+        counts, label = sample_counts(ising, angles, probs, int(opts["shots"]), int(opts["seed"]))
+        return counts, f"{label} (FALLBACK, not hardware)", info
+
+
+# --------------------------------------------------------------------------- optional embedding
+def compact_embedding(ising, angles, seed, iters=3000):
+    """Pick the tightest connected patch on a 57-qubit heavy-hex map and route inside it."""
+    from qiskit import transpile
+    from qiskit.transpiler import CouplingMap
+    n = len(ising["h"])
+    cmap = CouplingMap.from_heavy_hex(5)
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n) if not np.isclose(ising["J"][i, j], 0)]
+    import networkx as nx
+    hop = dict(nx.all_pairs_shortest_path_length(nx.Graph(list(cmap.get_edges()))))
+    spread = lambda lay: sum(hop[lay[i]][lay[j]] - 1 for i, j in pairs)
+    patch, _ = compact_patch(cmap.get_edges(), n, pairs, seed, iters=iters, n_starts=4)
     qc = qaoa_circuit(ising, angles)
     isa = transpile(qc, coupling_map=cmap.reduce(patch), basis_gates=["id", "rz", "sx", "x", "cx"],
                     optimization_level=3, seed_transpiler=seed)
@@ -447,15 +978,19 @@ def solve(data: dict) -> dict:
     budget, nodes, paths, conflicts, opts = parse_input(data)
     by_id = {p["id"]: p for p in paths}
     notes = []
-    if opts.get("auto_conflicts_from_crossings"):
-        extra = crossing_conflicts(nodes, paths) - conflicts
-        conflicts |= extra
-        if extra:
-            notes.append(f"Added {len(extra)} conflict pair(s) from crossing paths.")
-    conflicts_out = [sorted(c, key=str) for c in conflicts]
+    manual = set(conflicts)
+    conflicts_out = []
+    if opts.get("auto_conflicts", True):
+        for rec in detect_conflicts(nodes, paths, opts["coordinate_system"], float(opts["min_clearance"])):
+            conflicts.add(frozenset(rec["paths"]))
+            conflicts_out.append(rec)
+    detected = {frozenset(r["paths"]) for r in conflicts_out}
+    conflicts_out += [dict(paths=sorted(c, key=str), type="manual") for c in manual - detected]
+    log.info("%d conflict pair(s): %s", len(conflicts_out), [r["paths"] for r in conflicts_out])
 
     def result(status, **kw):
-        return dict(status=status, budget=budget, conflict_pairs=conflicts_out, notes=notes, **kw)
+        big = {k: kw.pop(k) for k in ("graph", "quantum") if k in kw}      # long sections go last
+        return dict(status=status, **kw, budget=budget, notes=notes, conflicts=conflicts_out, **big)
 
     # 1. Can all nodes be connected at all?
     if count_components(nodes, paths) > 1:
@@ -469,8 +1004,16 @@ def solve(data: dict) -> dict:
         return result("infeasible", connected=False, minimum_connection_cost=base_cost,
                       reason=f"Connecting all nodes needs at least {base_cost:g}, budget is {budget:g}.")
 
+    log.info("Feasible: connecting all nodes costs at least %g of %g", base_cost, budget)
+
     # 2. Quantum stage
-    q_ids, q_stats, q_notes = run_quantum_stage(paths, conflicts, budget, opts)
+    try:
+        q_ids, q_stats, q_notes = run_quantum_stage(paths, conflicts, budget, opts)
+    except HardwareNotReady as exc:
+        status = "pending" if exc.info.get("status") == "pending" else "error"
+        return result(status, connected=False, reason=f"IBM execution: {exc.info.get('error')}",
+                      quantum=dict(execution=exc.info))
+    log.info("Quantum stage chose routes %s", q_ids)
     notes += q_notes
     q_ids = list(q_ids)
 
@@ -484,6 +1027,7 @@ def solve(data: dict) -> dict:
             return result("infeasible", connected=False, reason="Could not connect all nodes.")
         worst = min(q_ids, key=lambda i: (by_id[i]["value"] / max(by_id[i]["cost"], 1e-9), str(i)))
         q_ids.remove(worst); dropped.append(worst)
+    log.info("Connectors %s, spent %g", conn_ids, spent)
     if dropped:
         notes.append(f"Dropped quantum route(s) {dropped} so the whole network fits the budget.")
 
@@ -517,24 +1061,56 @@ def solve(data: dict) -> dict:
     )
 
 
+def to_json(obj, fmt="compact"):
+    """compact: objects/arrays holding only scalars or flat arrays/objects go on one line, so each
+    edge, conflict, optimiser start, coefficient table ... is a single line. pretty: indent=2.
+    min: a single line."""
+    if fmt == "pretty":
+        return json.dumps(obj, indent=2, ensure_ascii=False)
+    if fmt == "min":
+        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    one = lambda o: json.dumps(o, ensure_ascii=False)
+    is_box = lambda o: isinstance(o, (dict, list))
+    kids = lambda o: o.values() if isinstance(o, dict) else o
+    flat = lambda o: not any(is_box(c) for c in kids(o))
+
+    def render(o, ind):
+        if not is_box(o) or not o or flat(o) or (isinstance(o, dict) and all(not is_box(c) or flat(c)
+                                                                            for c in o.values())):
+            return one(o)
+        pad, inner = " " * ind, " " * (ind + 2)
+        if isinstance(o, dict):
+            body = ",\n".join(f"{inner}{one(k)}: {render(v, ind + 2)}" for k, v in o.items())
+            return "{\n" + body + "\n" + pad + "}"
+        return "[\n" + ",\n".join(inner + render(v, ind + 2) for v in o) + "\n" + pad + "]"
+    return render(obj, 0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("input", nargs="?", help="input JSON file (default: stdin)")
     ap.add_argument("-o", "--output", help="output JSON file (default: stdout)")
+    ap.add_argument("-f", "--format", choices=["compact", "pretty", "min"], default="compact",
+                    help="output layout (default compact: one line per edge/conflict/record)")
+    ap.add_argument("--env-file", help="file with IBM_QUANTUM_TOKEN / IBM_QUANTUM_INSTANCE "
+                                       "(default: .env in the current folder or next to this script)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
-    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
-                        stream=sys.stderr, format="%(levelname)s %(message)s")
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(message)s")
+    log.setLevel(logging.INFO if args.verbose else logging.WARNING)   # only our own progress lines
     try:
+        env_file = load_env_file(args.env_file)
+        if env_file:
+            log.info("loaded settings from %s", env_file)
         data = json.load(open(args.input, encoding="utf-8")) if args.input else json.load(sys.stdin)
         out = solve(data)
-        code = 0 if out["status"] == "ok" else 2
+        code = {"ok": 0, "infeasible": 2, "pending": 3}.get(out["status"], 1)
     except (InputError, json.JSONDecodeError) as exc:
         out, code = dict(status="error", error=str(exc)), 1
     except Exception as exc:   # report, never crash silently inside the pod
         log.exception("internal error")
         out, code = dict(status="error", error=f"internal error: {exc}"), 1
-    text = json.dumps(out, indent=2, ensure_ascii=False)
+    text = to_json(out, args.format)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(text + "\n")
