@@ -1,18 +1,26 @@
+import json
+import logging
 import os
 import secrets
 import string
 
+import httpx
+
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
-from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import update_last_login
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
+
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -248,8 +256,108 @@ class UserView(APIView):
             status=status.HTTP_200_OK,
         )
 
+@csrf_exempt
+async def railway_plan(request):
+    """
+    Receive a railway network request from the frontend,
+    forward it to the FastAPI QAOA planner, and return its result.
+    """
 
-def home(request):
-    return JsonResponse({
-        "message": "Hello from Django!"
-    })
+    # Only accept POST requests.
+    if request.method != "POST":
+        return JsonResponse(
+            {"error": "Only POST requests are allowed."},
+            status=405
+        )
+
+    # ------------------------------------------------------------------
+    # 1. Parse incoming JSON
+    # ------------------------------------------------------------------
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse(
+            {"error": "Invalid JSON request body."},
+            status=400
+        )
+
+    if not isinstance(payload, dict):
+        return JsonResponse(
+            {"error": "Request body must be a JSON object."},
+            status=400
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Forward request to FastAPI
+    # ------------------------------------------------------------------
+
+    planner_url = settings.RAILWAY_PLANNER_URL
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=None,
+                write=10.0,
+                pool=10.0,
+            )
+        ) as client:
+
+            response = await client.post(
+                planner_url,
+                json=payload
+            )
+
+    except httpx.TimeoutException:
+        logger.exception("Connection to railway planner timed out")
+
+        return JsonResponse(
+            {"error": "Could not connect to the railway planner in time."},
+            status=504
+        )
+
+    except httpx.RequestError:
+        logger.exception("Could not reach railway planner")
+
+        return JsonResponse(
+            {"error": "Railway planner service is unavailable."},
+            status=502
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Parse FastAPI response
+    # ------------------------------------------------------------------
+
+    try:
+        result = response.json()
+
+    except ValueError:
+        logger.error(
+            "Railway planner returned invalid JSON. Status: %s",
+            response.status_code
+        )
+
+        return JsonResponse(
+            {"error": "Railway planner returned an invalid response."},
+            status=502
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Return the original result and HTTP status to the frontend
+    # ------------------------------------------------------------------
+
+    if isinstance(result, dict):
+        return JsonResponse(
+            result,
+            status=response.status_code,
+            json_dumps_params={"ensure_ascii": False}
+        )
+
+    return JsonResponse(
+        result,
+        safe=False,
+        status=response.status_code,
+        json_dumps_params={"ensure_ascii": False}
+    )
