@@ -4,6 +4,9 @@ The request mirrors the JSON structure accepted by the QAOA planner (new version
 conflict detection, circuit export and optional IBM Quantum execution), so any input that works
 with the script works here too. Validation happens up front so malformed input is rejected with
 a clear 422 before any computation starts.
+
+The same request can also be solved classically (railway_classical.py): send an `algorithm` label
+that contains "classic" / "classical" (and not "quantum"), optionally tuned with `classical`.
 """
 import re
 from typing import Annotated, Any, Literal
@@ -49,24 +52,38 @@ _EXAMPLE_REQUEST = {
 
 
 
-# ----------------------------------------------------------------------------- algorithm -> execution
-# The UI sends the algorithm it ran ("Quantum Algorithm (Simulated)", "quantum-hardware", ...).
-# It decides where the final QAOA circuit is sampled.
+# ----------------------------------------------------------------------------- algorithm -> solver / execution
+# The UI sends the algorithm it ran ("Quantum Algorithm (Simulated)", "quantum-hardware", "classic", ...).
+# A classical label picks the classical solver; a quantum label decides where the final QAOA circuit
+# is sampled.
 _ALLOWED_EXECUTIONS = {
     "simulator": {"simulator"},
     "ibm": {"ibm", "ibm_fake"},  # ibm_fake = local noisy copy of an IBM device, for testing
 }
 
 
+def _normalize_label(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", label.lower())
+
+
+def is_classical_algorithm(label: str | None) -> bool:
+    """'classic' / 'Classic Algorithm' / 'classical-exact' -> True. Anything mentioning
+    'quantum' is never classical, so 'Quantum + classical completion' stays quantum."""
+    if not label:
+        return False
+    text = _normalize_label(label)
+    return "classic" in text and "quantum" not in text
+
+
 def execution_for_algorithm(label: str | None) -> Literal["simulator", "ibm"] | None:
     """'Quantum Algorithm (Real Hardware)' / 'quantum-hardware' -> 'ibm';
-    '... (Simulated)' / 'quantum-simulated' / 'classic' -> 'simulator'; anything else -> None."""
-    if not label:
+    '... (Simulated)' / 'quantum-simulated' -> 'simulator'; classical or anything else -> None."""
+    if not label or is_classical_algorithm(label):
         return None
-    text = re.sub(r"[^a-z0-9]+", " ", label.lower())
+    text = _normalize_label(label)
     if "hardware" in text or "ibm" in text:
         return "ibm"
-    if "simulat" in text or "classic" in text:
+    if "simulat" in text:
         return "simulator"
     return None
 
@@ -149,6 +166,22 @@ class Options(BaseModel):
         return self
 
 
+class ClassicalOptions(BaseModel):
+    """Settings for the classical solver (railway_classical.py). Only used when the algorithm is classical.
+
+    exact     global optimum of the whole problem (MILP): budget + conflicts + all cities connected
+    pipeline  the QAOA pipeline with the QAOA stage replaced by an exact solver of the same sub-problem
+    greedy    cheapest conflict-free connection, then fill the budget by value per cost
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["exact", "pipeline", "greedy"] = "exact"
+    benchmark: bool = Field(False, description="Run all classical methods and add a `benchmark` comparison.")
+    time_limit: float = Field(60.0, gt=0, le=600, allow_inf_nan=False,
+                              description="MILP time limit in seconds.")
+
+
 class SolveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", json_schema_extra={"example": _EXAMPLE_REQUEST})
 
@@ -160,10 +193,18 @@ class SolveRequest(BaseModel):
     options: Options = Field(default_factory=Options)
     algorithm: str | None = Field(
         default=None, max_length=100,
-        description="Algorithm label from the UI. A hardware label runs the final circuit on IBM "
-                    "hardware (options.execution='ibm'); a simulated label runs it on the simulator.")
+        description="Algorithm label from the UI. A classic/classical label runs the classical solver "
+                    "(see `classical`). A hardware label runs the final QAOA circuit on IBM hardware "
+                    "(options.execution='ibm'); a simulated label runs it on the simulator.")
+    classical: ClassicalOptions = Field(
+        default_factory=ClassicalOptions,
+        description="Classical solver settings; ignored unless the algorithm is classical.")
 
     # -- helpers used by the service layer
+    @property
+    def is_classical(self) -> bool:
+        return is_classical_algorithm(self.algorithm)
+
     def nodes_map(self) -> dict[str, tuple[float, float]]:
         if isinstance(self.nodes, dict):
             return {name: (x, y) for name, (x, y) in self.nodes.items()}
@@ -171,6 +212,8 @@ class SolveRequest(BaseModel):
 
     @model_validator(mode="after")
     def _apply_algorithm(self) -> "SolveRequest":
+        if self.is_classical:
+            return self  # classical solver: options.execution (IBM / simulator) does not apply
         mode = execution_for_algorithm(self.algorithm)
         if mode is None:
             return self  # unknown/absent label: options.execution decides
@@ -239,7 +282,9 @@ class EdgeOut(BaseModel):
     to: str
     cost: float
     value: float
-    stage: Literal["quantum", "connector", "extra"]
+    # quantum/connector/extra: QAOA planner. classical: method "exact". core/connector/extra: method "pipeline"
+    # (core = the stage that QAOA would solve). connector/extra: method "greedy".
+    stage: Literal["quantum", "classical", "core", "connector", "extra"]
 
 
 class GraphOut(BaseModel):
@@ -248,9 +293,14 @@ class GraphOut(BaseModel):
 
 
 class CostBreakdown(BaseModel):
-    quantum: float
-    connectors: float
-    extra: float
+    """Cost per stage; only the stages of the solver that ran are set.
+    QAOA: quantum + connectors + extra. Classical: classical (exact) or core + connectors + extra."""
+
+    quantum: float | None = None
+    classical: float | None = None
+    core: float | None = None
+    connectors: float | None = None
+    extra: float | None = None
 
 
 class ConflictOut(BaseModel):
@@ -292,6 +342,28 @@ class QuantumStats(BaseModel):
     embedding: dict[str, Any] | None = None   # only with options.embedding=true
 
 
+class ClassicalStats(BaseModel):
+    """Diagnostics of the classical solver. Unknown keys are passed through untouched."""
+
+    model_config = ConfigDict(extra="allow")
+
+    method: Literal["exact", "pipeline", "greedy"] | None = None
+    solver: str | None = None
+    runtime_seconds: float | None = None
+    # exact (MILP)
+    proven_optimal: bool | None = None
+    upper_bound_value: float | None = None
+    mip_gap: float | None = None
+    variables: int | None = None
+    binary_variables: int | None = None
+    constraints: int | None = None
+    status_code: int | None = None
+    message: str | None = None
+    # pipeline
+    core_stage: dict[str, Any] | None = None
+    notes: list[str] | None = None
+
+
 class SolveResponse(BaseModel):
     """status == "ok" (200), "infeasible" (422) or "pending" (202, IBM job still running)."""
 
@@ -309,11 +381,16 @@ class SolveResponse(BaseModel):
     total_cost: float | None = None
     total_value: float | None = None
     remaining_budget: float | None = None
+    runtime_seconds: float | None = None
     cost_breakdown: CostBreakdown | None = None
     graph: GraphOut | None = None
 
     # ok, or pending (then only quantum.execution with the job id)
     quantum: QuantumStats | None = None
+
+    # classical solver only (algorithm "classic")
+    classical: ClassicalStats | None = None
+    benchmark: dict[str, Any] | None = None   # only with classical.benchmark=true
 
 
 class ErrorResponse(BaseModel):

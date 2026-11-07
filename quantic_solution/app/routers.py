@@ -5,8 +5,10 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from .schemas import ErrorResponse, Options, SolveRequest, SolveResponse
 from .services import (
+    PlannerBackendError,
     PlannerError,
     PlannerInputError,
+    PlannerTimeout,
     PlannerUnavailable,
     plan_network,
 )
@@ -18,23 +20,26 @@ router = APIRouter(prefix="/railway", tags=["railway"])
     "/plan",
     response_model=SolveResponse,
     response_model_exclude_none=True,  # drop fields that don't apply (e.g. graph when infeasible)
-    summary="Plan a connected railway network (QAOA + classical completion)",
+    summary="Plan a connected railway network (QAOA + classical completion, or a classical solver)",
     responses={
         422: {
             "model": SolveResponse,
             "description": "Invalid input, or the problem is infeasible (body has status='infeasible' and a reason).",
         },
         500: {"model": ErrorResponse, "description": "Unexpected solver failure."},
-        503: {"model": ErrorResponse, "description": "Optional dependency missing (e.g. qiskit for embedding)."},
-        504: {"model": ErrorResponse, "description": "Solver timed out."},
+        502: {"model": ErrorResponse, "description": "IBM Quantum execution failed and no fallback was requested."},
+        503: {"model": ErrorResponse, "description": "Optional dependency missing (e.g. qiskit for embedding, scipy)."},
+        504: {"model": ErrorResponse, "description": "Classical MILP hit its time limit without finding a network."},
     },
 )
 async def plan(
     body: SolveRequest,
     response: Response,
-    include_qubo: bool = Query(False, description="Include the full QUBO in quantum stats (large)."),
+    include_qubo: bool = Query(False, description="Include the full QUBO in quantum stats (large). QAOA only."),
 ) -> Any:
     try:
+        # QAOA by default; an algorithm label containing "classic" runs the classical solver
+        # (dispatched inside plan_network)
         result = await plan_network(body, include_qubo=include_qubo)
     except PlannerInputError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
@@ -42,6 +47,8 @@ async def plan(
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
     except PlannerUnavailable as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except PlannerBackendError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     except PlannerError as exc:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
