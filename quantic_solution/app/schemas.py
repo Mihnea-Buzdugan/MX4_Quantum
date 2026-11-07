@@ -5,6 +5,7 @@ conflict detection, circuit export and optional IBM Quantum execution), so any i
 with the script works here too. Validation happens up front so malformed input is rejected with
 a clear 422 before any computation starts.
 """
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -46,6 +47,28 @@ _EXAMPLE_REQUEST = {
                 "max_qubits": 16, "auto_conflicts": True, "min_clearance": 0},
 }
 
+
+
+# ----------------------------------------------------------------------------- algorithm -> execution
+# The UI sends the algorithm it ran ("Quantum Algorithm (Simulated)", "quantum-hardware", ...).
+# It decides where the final QAOA circuit is sampled.
+_ALLOWED_EXECUTIONS = {
+    "simulator": {"simulator"},
+    "ibm": {"ibm", "ibm_fake"},  # ibm_fake = local noisy copy of an IBM device, for testing
+}
+
+
+def execution_for_algorithm(label: str | None) -> Literal["simulator", "ibm"] | None:
+    """'Quantum Algorithm (Real Hardware)' / 'quantum-hardware' -> 'ibm';
+    '... (Simulated)' / 'quantum-simulated' / 'classic' -> 'simulator'; anything else -> None."""
+    if not label:
+        return None
+    text = re.sub(r"[^a-z0-9]+", " ", label.lower())
+    if "hardware" in text or "ibm" in text:
+        return "ibm"
+    if "simulat" in text or "classic" in text:
+        return "simulator"
+    return None
 
 # ----------------------------------------------------------------------------- request
 class NodeIn(BaseModel):
@@ -135,12 +158,30 @@ class SolveRequest(BaseModel):
     conflict_pairs: list[tuple[PathId, PathId]] = Field(
         default_factory=list, description="Optional extra, non-geometric conflicts.")
     options: Options = Field(default_factory=Options)
+    algorithm: str | None = Field(
+        default=None, max_length=100,
+        description="Algorithm label from the UI. A hardware label runs the final circuit on IBM "
+                    "hardware (options.execution='ibm'); a simulated label runs it on the simulator.")
 
     # -- helpers used by the service layer
     def nodes_map(self) -> dict[str, tuple[float, float]]:
         if isinstance(self.nodes, dict):
             return {name: (x, y) for name, (x, y) in self.nodes.items()}
         return {n.name: (n.lon, n.lat) for n in self.nodes}
+
+    @model_validator(mode="after")
+    def _apply_algorithm(self) -> "SolveRequest":
+        mode = execution_for_algorithm(self.algorithm)
+        if mode is None:
+            return self  # unknown/absent label: options.execution decides
+        if "execution" in self.options.model_fields_set:
+            if self.options.execution not in _ALLOWED_EXECUTIONS[mode]:
+                raise ValueError(
+                    f"algorithm {self.algorithm!r} implies execution {mode!r}, "
+                    f"but options.execution is {self.options.execution!r}")
+        else:
+            self.options.execution = mode
+        return self
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "SolveRequest":

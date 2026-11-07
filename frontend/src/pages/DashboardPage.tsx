@@ -19,13 +19,12 @@ import {
 import { useOutletContext } from 'react-router-dom'
 import IntermediateLog, { type IntermediateLogEntry } from '../components/IntermediateLog'
 import NetworkDiagram from '../components/NetworkDiagram'
-import QuantumDetails from '../components/Quantumdetails'
+import QuantumDetails from '../components/QuantumDetails'
 import SimulationOverlay from '../components/SimulationOverlay'
 import type { RunHistoryRecord, WorkspaceContext } from '../components/AppShell'
 import { cities, modelEvaluations, routes, startingBudget } from '../data/routes'
 import { createRailwayPlanRequest, planRailwayNetwork } from '../services/railwayPlanner'
 import {
-  withCircuit,
   type Conflict,
   type PathId,
   type RailwayPlanResponse,
@@ -317,8 +316,8 @@ export default function DashboardPage({ algorithm }: Props) {
     resetResults()
     setRunStatus('running')
     const startedAt = performance.now()
-    // withCircuit asks the API for the QAOA circuit (options.include_circuit)
-    const payload = withCircuit(createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName))
+    // the algorithm label also picks options.execution (real IBM hardware or the simulator)
+    const payload = createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName)
 
     try {
       const response: RailwayPlanResponse = await planRailwayNetwork(payload)
