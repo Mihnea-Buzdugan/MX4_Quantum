@@ -10,8 +10,10 @@ export default function App() {
         <Route path="/login" element={<AuthPage mode="login" />} />
         <Route path="/register" element={<AuthPage mode="register" />} />
         <Route element={<AppShell />}>
-          <Route index element={<Navigate to="/quantum-algorithm" replace />} />
-          <Route path="quantum-algorithm" element={<DashboardPage key="quantum" algorithm="quantum" />} />
+          <Route index element={<Navigate to="/quantum-algorithm/simulated" replace />} />
+          <Route path="quantum-algorithm" element={<Navigate to="/quantum-algorithm/simulated" replace />} />
+          <Route path="quantum-algorithm/simulated" element={<DashboardPage key="quantum-simulated" algorithm="quantum-simulated" />} />
+          <Route path="quantum-algorithm/real-hardware" element={<DashboardPage key="quantum-hardware" algorithm="quantum-hardware" />} />
           <Route path="classic-algorithm" element={<DashboardPage key="classic" algorithm="classic" />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
