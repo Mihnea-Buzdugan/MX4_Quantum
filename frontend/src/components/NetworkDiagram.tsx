@@ -32,9 +32,9 @@ export default function NetworkDiagram({
       <svg className="network-svg" style={{ transform: `scale(${zoom})` }} viewBox="0 0 800 480" role="img" aria-label="Illustrated railway network map of Romania">
         <defs>
           <linearGradient id="route-glow" x1="0" x2="1">
-            <stop offset="0%" stopColor="#0bd9e8" stopOpacity=".25" />
-            <stop offset="50%" stopColor="#11e3ee" />
-            <stop offset="100%" stopColor="#0bd9e8" stopOpacity=".25" />
+            <stop offset="0%" stopColor="#0e94a0" stopOpacity=".25" />
+            <stop offset="50%" stopColor="#0a7f8a" />
+            <stop offset="100%" stopColor="#0e94a0" stopOpacity=".25" />
           </linearGradient>
           <filter id="soft-glow" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="3" result="blur" />

@@ -1,22 +1,41 @@
-import { useCallback, useState } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity,
   Bell,
-  ChevronDown,
   CircleCheck,
   Cpu,
   History,
+  LogIn,
+  LogOut,
+  Layers,
   Orbit,
   Menu,
   TrainFront,
   X,
 } from 'lucide-react'
 
+import { authFetch, isLoggedIn, logout } from '../utils/auth'
+
+type CurrentUser = { email: string; firstName?: string; lastName?: string; username?: string }
+
+function initials(user: CurrentUser | null) {
+  if (!user) return '?'
+  const fromName = `${user.firstName?.[0] ?? ''}${user.lastName?.[0] ?? ''}`.trim()
+  return (fromName || user.email.slice(0, 2)).toUpperCase()
+}
+
+function displayName(user: CurrentUser | null) {
+  if (!user) return 'Signed in'
+  const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim()
+  return name || user.username || user.email
+}
+
 const navigation = [
   { label: 'Classic Algorithm', to: '/classic-algorithm', icon: Cpu, mode: 'CLASSIC' },
   { label: 'Quantum Algorithm (Simulated)', to: '/quantum-algorithm/simulated', icon: Orbit, mode: 'SIMULATOR' },
   { label: 'Quantum Algorithm (Real Hardware)', to: '/quantum-algorithm/real-hardware', icon: Orbit, mode: 'REAL HARDWARE' },
+  { label: 'Batch Simulations', to: '/batch-simulations', icon: Layers, mode: 'BATCH' },
   { label: 'Run History', to: '/run-history', icon: History, mode: 'HISTORY' },
 ]
 
@@ -27,7 +46,39 @@ export default function AppShell() {
   const [runMetrics, setRunMetrics] = useState<RunMetrics | null>(null)
   const [runHistory, setRunHistory] = useState<RunHistoryRecord[]>([])
   const location = useLocation()
-  const activeWorkspace = navigation.find(({ to }) => location.pathname === to) ?? navigation[0]
+  const navigate = useNavigate()
+  const [user, setUser] = useState<CurrentUser | null>(null)
+  const [loggedIn, setLoggedIn] = useState(isLoggedIn())
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  // who is signed in (name / email for the sidebar and the avatar)
+  useEffect(() => {
+    if (!isLoggedIn()) {
+      setLoggedIn(false)
+      setUser(null)
+      return
+    }
+    setLoggedIn(true)
+    let cancelled = false
+    authFetch('/api/user/')
+      .then(async (response) => (response.ok ? (await response.json()) as { user?: CurrentUser } : null))
+      .then((data) => { if (!cancelled && data?.user) setUser(data.user) })
+      .catch(() => { /* offline: keep the session, just no name */ })
+    return () => { cancelled = true }
+  }, [location.pathname])
+
+  async function handleLogout() {
+    setLoggingOut(true)
+    await logout() // revokes the refresh token on the server and clears the stored tokens
+    setUser(null)
+    setLoggedIn(false)
+    setRunHistory([])
+    setRunMetrics(null)
+    setLoggingOut(false)
+    navigate('/login', { replace: true })
+  }
+  // nested pages (e.g. /run-history/batches/3) belong to their section
+  const activeWorkspace = navigation.find(({ to }) => location.pathname === to || location.pathname.startsWith(`${to}/`)) ?? navigation[0]
   const algorithmName = activeWorkspace.label
   const appendRunHistory = useCallback((record: RunHistoryRecord) => {
     setRunHistory((history) => [record, ...history])
@@ -69,7 +120,7 @@ export default function AppShell() {
             >
               <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
-              {location.pathname === to && <span className="nav-live-dot" />}
+              {activeWorkspace.to === to && <span className="nav-live-dot" />}
             </NavLink>
           ))}
         </nav>
@@ -82,11 +133,21 @@ export default function AppShell() {
         </div>
         <div className="sidebar-bottom">
           <div className="help-link"><Activity size={16} /> Route evaluation <span>↗</span></div>
-          <div className="user-card">
-            <div className="avatar">QR</div>
-            <div className="user-meta"><strong>Railway Planner</strong><span>Network design</span></div>
-            <ChevronDown size={15} className="user-chevron" />
-          </div>
+          {loggedIn ? (
+            <div className="user-card">
+              <div className="avatar" aria-hidden="true">{initials(user)}</div>
+              <div className="user-meta"><strong>{displayName(user)}</strong><span>{user?.email ?? 'Railway Planner'}</span></div>
+              <button type="button" className="logout-button" onClick={() => void handleLogout()} disabled={loggingOut} aria-label="Log out" title="Log out">
+                <LogOut size={15} />
+              </button>
+            </div>
+          ) : (
+            <div className="user-card">
+              <div className="avatar" aria-hidden="true">QR</div>
+              <div className="user-meta"><strong>Not signed in</strong><span>Runs are not saved</span></div>
+              <Link to="/login" className="logout-button" aria-label="Sign in" title="Sign in"><LogIn size={15} /></Link>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -124,7 +185,16 @@ export default function AppShell() {
               </button>
               {notificationsOpen && <div className="notification-popover" role="status"><strong>{algorithmName}</strong><span>Routes are selected automatically during evaluation.</span><small>Construction budget: 7 units.</small></div>}
             </div>
-            <Link to="/login" className="topbar-avatar" aria-label="Open sign in page">MB</Link>
+            {loggedIn ? (
+              <>
+                <span className="topbar-avatar" title={user?.email ?? ''}>{initials(user)}</span>
+                <button type="button" className="button button-secondary topbar-logout" onClick={() => void handleLogout()} disabled={loggingOut}>
+                  <LogOut size={14} /> {loggingOut ? 'Logging out…' : 'Log out'}
+                </button>
+              </>
+            ) : (
+              <Link to="/login" className="button button-primary topbar-logout"><LogIn size={14} /> Sign in</Link>
+            )}
           </div>
         </header>
         <main className="page-content">

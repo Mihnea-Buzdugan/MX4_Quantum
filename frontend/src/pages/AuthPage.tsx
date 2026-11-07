@@ -1,9 +1,12 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { ArrowRight, Eye, EyeOff, LockKeyhole, Mail, TrainFront, User } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
-import { apiUrl, setTokens, type Tokens } from '../utils/auth'
+import { apiUrl, isLoggedIn, setTokens, type Tokens } from '../utils/auth'
+
+// Same variable main.tsx uses for GoogleOAuthProvider; no id = no Google button.
+const GOOGLE_ENABLED = Boolean((import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined)?.trim())
 
 type Props = {
   mode: 'login' | 'register'
@@ -22,6 +25,16 @@ export default function AuthPage({ mode, onLoginSuccess }: Props) {
   const [showPassword, setShowPassword] = useState(false)
   const [notice, setNotice] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // already signed in: go straight to the workspace
+  useEffect(() => {
+    if (isLoggedIn()) navigate('/', { replace: true })
+  }, [navigate])
+
+  // clear the message when switching between sign in and sign up
+  useEffect(() => {
+    setNotice('')
+  }, [mode])
 
   // Shared by email login, signup and Google login: POST, store tokens, enter the app.
   async function authenticate(path: string, payload: Record<string, string>) {
@@ -42,7 +55,7 @@ export default function AuthPage({ mode, onLoginSuccess }: Props) {
 
       setTokens(data.tokens)
       await onLoginSuccess?.()
-      navigate('/')
+      navigate('/', { replace: true })
     } catch {
       setNotice('Could not reach the server. Please try again.')
     } finally {
@@ -111,23 +124,27 @@ export default function AuthPage({ mode, onLoginSuccess }: Props) {
             </label>
             <label className="field-label">
               Password
-              <span className="input-wrap"><LockKeyhole size={15} /><input className="text-input" type={showPassword ? 'text' : 'password'} name="password" autoComplete={isRegister ? 'new-password' : 'current-password'} placeholder="Enter your password" minLength={8} required /><button type="button" className="password-toggle" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span>
+              <span className="input-wrap"><LockKeyhole size={15} /><input className="text-input" type={showPassword ? 'text' : 'password'} name="password" autoComplete={isRegister ? 'new-password' : 'current-password'} placeholder={isRegister ? 'At least 8 characters' : 'Enter your password'} minLength={isRegister ? 8 : undefined} required /><button type="button" className="password-toggle" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span>
             </label>
             {!isRegister && <div className="auth-options"><label className="remember-check"><input type="checkbox" /> <span>Remember me</span></label><button type="button" className="text-link" onClick={() => setNotice('Password reset is not connected in this demo.')}>Forgot password?</button></div>}
-            <button className="button button-primary auth-submit" type="submit" disabled={submitting}>{isRegister ? 'Create account' : 'Sign in to workspace'} <ArrowRight size={16} /></button>
+            <button className="button button-primary auth-submit" type="submit" disabled={submitting}>{submitting ? (isRegister ? 'Creating account…' : 'Signing in…') : isRegister ? 'Create account' : 'Sign in to workspace'} <ArrowRight size={16} /></button>
           </form>
+          <div className={`auth-notice auth-notice-form ${notice ? 'auth-notice-error' : ''}`} role="status">{notice}</div>
 
-          <div className="auth-divider"><span /> <span>OR</span> <span /></div>
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <GoogleLogin
-              onSuccess={handleGoogleSuccess}
-              onError={() => setNotice('Google sign-in failed. Please try again.')}
-              text={isRegister ? 'signup_with' : 'signin_with'}
-              theme="outline"
-              size="large"
-            />
-          </div>
-          <div className="auth-notice" role="status">{notice}</div>
+          {GOOGLE_ENABLED && (
+            <>
+              <div className="auth-divider"><span /> <span>OR</span> <span /></div>
+              <div className="auth-google">
+                <GoogleLogin
+                  onSuccess={handleGoogleSuccess}
+                  onError={() => setNotice('Google sign-in failed. Please try again.')}
+                  text={isRegister ? 'signup_with' : 'signin_with'}
+                  theme="outline"
+                  size="large"
+                />
+              </div>
+            </>
+          )}
           <p className="auth-switch">{isRegister ? 'Already have an account?' : 'New to Quantum Rail?'} <Link to={isRegister ? '/login' : '/register'}>{isRegister ? 'Sign in' : 'Create an account'}</Link></p>
         </motion.div>
         <div className="auth-footer"><span>© {new Date().getFullYear()} Quantum Rail</span><span>Secure network access <i /></span></div>

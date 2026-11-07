@@ -7,8 +7,13 @@ import type { RailwayPlanResponse } from './railwayPlannerTypes'
 export type { RailwayPlanResponse, PlanEdge as RailwayPlanEdge } from './railwayPlannerTypes'
 
 export type RailwayPlanOptions = {
+  // ---- the four QAOA settings chosen on the dashboard
+  qaoa_depth: number // p = number of QAOA layers
+  slack: boolean // true = slack qubits for the budget, false = no slack (unbalanced penalization)
+  maxiter: number // COBYLA iterations per optimiser run
+  shots: number // measurements of the final QAOA circuit
+  // ---- other planner options
   quantum_fraction: number
-  qaoa_depth: number
   max_qubits: number
   seed: number
   auto_conflicts: boolean
@@ -18,7 +23,7 @@ export type RailwayPlanOptions = {
   circuit_formats: string[]
   execution: string
   ibm_backend: string
-  ibm_shots: number
+  ibm_shots: number | null // null = same as `shots`
   ibm_layout: string
   ibm_optimization_level: number
   ibm_dynamical_decoupling: boolean
@@ -28,9 +33,40 @@ export type RailwayPlanOptions = {
   ibm_fallback: boolean
 }
 
+// Limits enforced by the FastAPI schema (schemas.py: Options).
+export const QAOA_LIMITS = {
+  p: { min: 1, max: 6 },
+  iterations: { min: 1, max: 3000 },
+  shots: { min: 1, max: 100_000 },
+} as const
+
+export type QaoaSettings = {
+  p: number
+  slack: boolean
+  iterations: number
+  shots: number
+}
+
+export const DEFAULT_QAOA_SETTINGS: QaoaSettings = {
+  p: 1,
+  slack: true,
+  iterations: 300,
+  shots: 2048,
+}
+
+// Dashboard settings -> planner option names.
+export function qaoaSettingsToOptions(settings: QaoaSettings): Partial<RailwayPlanOptions> {
+  return {
+    qaoa_depth: settings.p,
+    slack: settings.slack,
+    maxiter: settings.iterations,
+    shots: settings.shots,
+  }
+}
+
 export const DEFAULT_PLANNER_OPTIONS: RailwayPlanOptions = {
+  ...qaoaSettingsToOptions(DEFAULT_QAOA_SETTINGS) as Pick<RailwayPlanOptions, 'qaoa_depth' | 'slack' | 'maxiter' | 'shots'>,
   quantum_fraction: 0.8,
-  qaoa_depth: 1,
   max_qubits: 12,
   seed: 2026,
   auto_conflicts: true,
@@ -40,7 +76,7 @@ export const DEFAULT_PLANNER_OPTIONS: RailwayPlanOptions = {
   circuit_formats: ['qasm3'],
   execution: 'simulator',
   ibm_backend: '',
-  ibm_shots: 4096,
+  ibm_shots: null, // the IBM job uses the same number of shots as the simulator
   ibm_layout: 'best',
   ibm_optimization_level: 3,
   ibm_dynamical_decoupling: true,
@@ -63,6 +99,11 @@ export type RailwayPlanRequest = {
   options: RailwayPlanOptions
   // Label stored with the saved plan; Django removes it before calling FastAPI.
   algorithm?: string
+  // Keep the full QUBO, Ising model and optimiser trace in the response (large).
+  include_qubo?: boolean
+  // Batch runs: Django links the saved run to this batch (removed before calling FastAPI).
+  batch_id?: number
+  batch_index?: number
 }
 
 export class RailwayPlannerError extends Error {
@@ -99,15 +140,25 @@ function toPlannerId(route: RailRoute): number {
 
 // Reverse of toPlannerId: planner id -> the app's route id.
 // Anything that is not a valid index (e.g. "slack 4") is returned unchanged.
-function toRouteId(plannerId: string | number): string | number {
+export function toRouteId(plannerId: string | number): string | number {
   const index = Number(plannerId)
   return Number.isInteger(index) && routes[index] ? routes[index].id : plannerId
 }
 
 // The rest of the UI matches routes by their string id, so translate every
 // route id in the response back to it: built edges, conflicts and QAOA variables.
-function withRouteIds(response: RailwayPlanResponse): RailwayPlanResponse {
+// Also used for runs loaded back from the run history (Django stores the planner's own ids).
+export function withRouteIds<T extends RailwayPlanResponse>(response: T): T {
   const variables = response.quantum?.variables
+  const quantum = response.quantum
+    ? {
+      ...response.quantum,
+      top_samples: response.quantum.top_samples?.map((sample) => ({ ...sample, routes: sample.routes.map(toRouteId) })),
+      reference_optimum: response.quantum.reference_optimum
+        ? { ...response.quantum.reference_optimum, routes: response.quantum.reference_optimum.routes.map(toRouteId) }
+        : response.quantum.reference_optimum,
+    }
+    : response.quantum
   return {
     ...response,
     conflicts: (response.conflicts ?? []).map((conflict) => ({
@@ -120,14 +171,14 @@ function withRouteIds(response: RailwayPlanResponse): RailwayPlanResponse {
         edges: response.graph.edges.map((edge) => ({ ...edge, id: toRouteId(edge.id) })),
       }
       : response.graph,
-    quantum: response.quantum && variables
+    quantum: quantum && variables
       ? {
-        ...response.quantum,
+        ...quantum,
         variables: Object.fromEntries(
           Object.entries(variables).map(([name, value]) => [name, name.startsWith('x') ? toRouteId(value) : value]),
         ),
       }
-      : response.quantum,
+      : quantum,
   }
 }
 
@@ -209,11 +260,13 @@ export async function planRailwayNetwork(payload: RailwayPlanRequest): Promise<R
   }
 
   // 202: the IBM job was submitted but is still running; the body carries the job id.
+  // disconnected / no_valid_sample: QAOA ran, but no measured sample was a connected / valid
+  // network (more shots, a larger p or more iterations usually help). Shown as a normal result.
   if (
     typeof body === 'object'
     && body !== null
     && 'status' in body
-    && body.status === 'pending'
+    && (body.status === 'pending' || body.status === 'disconnected' || body.status === 'no_valid_sample')
   ) {
     return withRouteIds(body as RailwayPlanResponse)
   }

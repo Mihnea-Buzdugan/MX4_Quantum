@@ -1,7 +1,10 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/AppShell'
 import AuthPage from './pages/AuthPage'
+import BatchHistoryPage from './pages/BatchHistoryPage'
+import BatchSimulationPage from './pages/BatchSimulationPage'
 import DashboardPage from './pages/DashboardPage'
+import PlanHistoryPage from './pages/PlanHistoryPage'
 import RunHistoryPage from './pages/RunHistoryPage'
 
 export default function App() {
@@ -15,7 +18,10 @@ export default function App() {
         <Route path="quantum-algorithm/simulated" element={<DashboardPage key="quantum-simulated" algorithm="quantum-simulated" />} />
         <Route path="quantum-algorithm/real-hardware" element={<DashboardPage key="quantum-hardware" algorithm="quantum-hardware" />} />
         <Route path="classic-algorithm" element={<DashboardPage key="classic" algorithm="classic" />} />
+        <Route path="batch-simulations" element={<BatchSimulationPage />} />
         <Route path="run-history" element={<RunHistoryPage />} />
+        <Route path="run-history/plans/:id" element={<PlanHistoryPage />} />
+        <Route path="run-history/batches/:id" element={<BatchHistoryPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -3,33 +3,49 @@
 .qd-header h2 { margin: 0; font-size: 16px; }
 .qd-header p { margin: 2px 0 0; opacity: 0.7; font-size: 12px; }
 .qd-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
-.qd-tab { border: 1px solid rgba(128, 128, 128, 0.35); background: transparent; color: inherit; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
-.qd-tab:hover { background: rgba(128, 128, 128, 0.12); }
-.qd-tab-active { background: rgba(124, 92, 255, 0.22); border-color: rgba(124, 92, 255, 0.7); }
+.qd-tab { border: 1px solid rgba(93, 93, 93, 0.438); background: transparent; color: inherit; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+.qd-tab:hover { background: rgba(93, 93, 93, 0.15); }
+.qd-tab-active { background: rgba(124, 92, 255, 0.253); border-color: rgba(124, 92, 255, 0.805); }
 
 .qd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.qd-chip { border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 6px; padding: 2px 8px; font-size: 12px; font-family: ui-monospace, monospace; }
+.qd-chip { border: 1px solid rgba(93, 93, 93, 0.438); border-radius: 6px; padding: 2px 8px; font-size: 12px; font-family: ui-monospace, monospace; }
 .qd-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; opacity: 0.8; margin-bottom: 8px; }
 .qd-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 
-.qd-scroll { overflow: auto; max-width: 100%; border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 8px; padding: 6px; }
+.qd-scroll { overflow: auto; max-width: 100%; border: 1px solid rgba(93, 93, 93, 0.312); border-radius: 8px; padding: 6px; }
 .qd-scroll svg { display: block; color: inherit; }
 .qd-scroll svg text { fill: currentColor; font-family: ui-monospace, monospace; }
 
 .qd-actions { display: flex; gap: 8px; margin: 10px 0; }
-.qd-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(128, 128, 128, 0.4); background: transparent; color: inherit; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
-.qd-btn:hover { background: rgba(128, 128, 128, 0.12); }
+.qd-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(93, 93, 93, 0.5); background: transparent; color: inherit; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.qd-btn:hover { background: rgba(93, 93, 93, 0.15); }
 
-.qd-pre { margin: 6px 0; padding: 10px; border-radius: 8px; background: rgba(128, 128, 128, 0.12); font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 320px; white-space: pre-wrap; word-break: break-word; }
+.qd-pre { margin: 6px 0; padding: 10px; border-radius: 8px; background: rgba(93, 93, 93, 0.15); font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 320px; white-space: pre-wrap; word-break: break-word; }
 .qd-note { font-size: 12px; opacity: 0.75; margin: 6px 0; }
-.qd-error { font-size: 12px; color: #e5484d; margin: 6px 0; }
+.qd-error { font-size: 12px; color: #d42e3a; margin: 6px 0; }
 
 .qd-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; margin: 0 0 12px; }
 .qd-kv dt { opacity: 0.65; }
 .qd-kv dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-word; }
 
-.qd-table-wrap { overflow: auto; max-height: 300px; border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 8px; margin-bottom: 12px; }
+.qd-table-wrap { overflow: auto; max-height: 300px; border: 1px solid rgba(93, 93, 93, 0.312); border-radius: 8px; margin-bottom: 12px; }
 .qd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.qd-table th, .qd-table td { text-align: left; padding: 5px 10px; border-bottom: 1px solid rgba(128, 128, 128, 0.18); font-family: ui-monospace, monospace; }
-.qd-table th { position: sticky; top: 0; background: rgba(40, 40, 50, 0.9); color: #fff; font-weight: 600; }
+.qd-table th, .qd-table td { text-align: left; padding: 5px 10px; border-bottom: 1px solid rgba(93, 93, 93, 0.225); font-family: ui-monospace, monospace; }
+.qd-table th { position: sticky; top: 0; background: rgba(231, 231, 236, 0.9); color: #121212; font-weight: 600; }
 .qd-details summary { cursor: pointer; font-size: 12px; opacity: 0.8; margin: 6px 0; }
+/* QUBO matrix heat map (QuboMatrix.tsx) */
+.qm { margin-bottom: 12px; }
+.qm-scroll { overflow-x: auto; padding: 8px; border: 1px solid rgba(93, 93, 93, 0.312); border-radius: 8px; }
+.qm-grid { display: grid; grid-template-columns: max-content repeat(var(--qm-n), minmax(46px, 1fr)); gap: 2px; min-width: max-content; font-family: ui-monospace, monospace; font-size: 11px; }
+.qm-row { display: contents; }
+.qm-corner, .qm-head { display: flex; align-items: center; justify-content: center; padding: 3px 6px; opacity: .75; font-weight: 600; white-space: nowrap; }
+.qm-corner { font-style: italic; opacity: .5; }
+.qm-row-head { justify-content: flex-end; }
+.qm-cell { display: flex; align-items: center; justify-content: flex-end; min-height: 26px; padding: 0 6px; border-radius: 3px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qm-strong { color: #121212; font-weight: 600; }
+.qm-zero { color: rgba(93, 93, 93, 0.75); background: rgba(93, 93, 93, 0.075); }
+.qm-lower { background: repeating-linear-gradient(135deg, rgba(93, 93, 93, 0.062) 0 4px, transparent 4px 8px); }
+.qm-diag { outline: 1.5px solid rgba(15, 23, 42, 0.495); outline-offset: -1.5px; }
+.qm-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 11px; opacity: .8; }
+.qm-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
+.qm-legend-diag { outline: 1.5px solid rgba(15, 23, 42, 0.495); outline-offset: -1.5px; }

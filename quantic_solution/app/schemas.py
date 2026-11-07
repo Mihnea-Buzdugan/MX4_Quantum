@@ -11,7 +11,7 @@ that contains "classic" / "classical" (and not "quantum"), optionally tuned with
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PathId = int | str
 
@@ -46,7 +46,7 @@ _EXAMPLE_REQUEST = {
         {"id": 10, "from": "Cluj-Napoca", "to": "Sibiu", "cost": 2, "value": 4},
         {"id": 11, "from": "Iași", "to": "Constanța", "cost": 6, "value": 11},
     ],
-    "options": {"quantum_fraction": 0.8, "qaoa_depth": 2, "shots": 2048, "seed": 2026,
+    "options": {"p": 2, "slack": True, "iterations": 300, "shots": 2048, "seed": 2026,
                 "max_qubits": 16, "auto_conflicts": True, "min_clearance": 0},
 }
 
@@ -123,14 +123,26 @@ class Options(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # ---- the four QAOA settings chosen in the UI (aliases match the planner script)
+    qaoa_depth: int = Field(
+        2, ge=1, le=6, validation_alias=AliasChoices("qaoa_depth", "p", "layers"),
+        description="p = number of QAOA layers (alias `p`).")
+    slack: bool = Field(
+        True, description="Budget constraint: true = slack qubits (exact 'cost <= budget'), "
+                          "false = no slack (unbalanced penalization, no extra qubits).")
+    maxiter: int = Field(
+        300, ge=1, le=3000,
+        validation_alias=AliasChoices("maxiter", "iterations", "cobyla_iterations", "cobyla_maxiter"),
+        description="COBYLA iterations per optimiser run (alias `iterations`).")
+    shots: int = Field(
+        2048, ge=1, le=100_000, validation_alias=AliasChoices("shots", "nr_shots"),
+        description="Measurements of the final QAOA circuit (alias `nr_shots`).")
+
     # ---- optimisation
     quantum_fraction: float = Field(0.8, ge=0, le=1)
-    qaoa_depth: int = Field(2, ge=1, le=6)
-    shots: int = Field(2048, ge=1, le=100_000)
     seed: int = 2026
     max_qubits: int = Field(16, ge=2, le=20)
     restarts: int = Field(6, ge=1, le=30)
-    maxiter: int = Field(300, ge=1, le=3000)
     use_leftover_for_value: bool = True
 
     # ---- geometric conflict detection (on by default, like the script)
@@ -199,6 +211,11 @@ class SolveRequest(BaseModel):
     classical: ClassicalOptions = Field(
         default_factory=ClassicalOptions,
         description="Classical solver settings; ignored unless the algorithm is classical.")
+    include_qubo: bool = Field(
+        False,
+        description="Same as the ?include_qubo=true query parameter: keep the full QUBO (formula, coefficients, "
+                    "matrix), the Ising model and the optimiser trace in `quantum`. In the body so it also "
+                    "works through the Django proxy, which does not forward query parameters.")
 
     # -- helpers used by the service layer
     @property
@@ -365,9 +382,11 @@ class ClassicalStats(BaseModel):
 
 
 class SolveResponse(BaseModel):
-    """status == "ok" (200), "infeasible" (422) or "pending" (202, IBM job still running)."""
+    """status == "ok" (200), "infeasible" (422), "pending" (202, IBM job still running), or - QAOA
+    only - "disconnected" / "no_valid_sample" (200: no measured sample was a connected / valid network;
+    more shots, a larger p or more COBYLA iterations usually help)."""
 
-    status: Literal["ok", "infeasible", "pending"]
+    status: Literal["ok", "infeasible", "pending", "disconnected", "no_valid_sample"]
     connected: bool
     budget: float
     conflicts: list[ConflictOut] = Field(default_factory=list)
