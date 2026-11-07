@@ -1,4 +1,5 @@
 import type { RailCity, RailRoute } from '../data/routes'
+import { authFetch } from '../utils/auth'
 
 export type RailwayPlanRequest = {
   budget: number
@@ -12,6 +13,8 @@ export type RailwayPlanRequest = {
   }>
   conflict_pairs: Array<[string, string]>
   options: Record<string, never>
+  // Label stored with the saved plan; Django removes it before calling FastAPI.
+  algorithm?: string
 }
 
 export type RailwayPlanEdge = {
@@ -30,6 +33,8 @@ export type RailwayPlanResponse = {
   conflict_pairs: Array<Array<string | number>>
   notes: string[]
   reason?: string
+  // Id of the saved plan, added by Django when the user is logged in.
+  plan_id?: number
   minimum_connection_cost?: number | null
   total_cost?: number | null
   total_value?: number | null
@@ -71,13 +76,14 @@ export class RailwayPlannerError extends Error {
 }
 
 function getPlannerUrl() {
-  return import.meta.env.VITE_RAILWAY_PLANNER_URL || 'http://localhost:8001/railway/plan'
+  return import.meta.env.VITE_RAILWAY_PLANNER_URL || 'http://localhost:8000/api/railway/plan'
 }
 
 export function createRailwayPlanRequest(
   budget: number,
   selectedCities: RailCity[],
   selectedRoutes: RailRoute[],
+  algorithm?: string,
 ): RailwayPlanRequest {
   return {
     budget,
@@ -93,6 +99,7 @@ export function createRailwayPlanRequest(
     })),
     conflict_pairs: [],
     options: {},
+    algorithm,
   }
 }
 
@@ -110,7 +117,9 @@ async function readJson(response: Response): Promise<unknown> {
 export async function planRailwayNetwork(payload: RailwayPlanRequest): Promise<RailwayPlanResponse> {
   let response: Response
   try {
-    response = await fetch(getPlannerUrl(), {
+    // authFetch attaches the JWT access token (and refreshes it on a 401),
+    // so Django knows which user to save the plan for.
+    response = await authFetch(getPlannerUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

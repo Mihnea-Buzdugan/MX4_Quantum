@@ -184,6 +184,14 @@ export default function DashboardPage({ algorithm }: Props) {
     resultEdges.map((edge) => [String(edge.id), edge.stage]),
   )
 
+  // Routes the planner actually used. Before a run (or if the planner returned
+  // no edges) the map shows all candidate routes; after a successful run it
+  // shows only the routes in the returned network.
+  const usedRouteIds = resultEdges.map((edge) => String(edge.id))
+  const displayedRouteIds = usedRouteIds.length > 0
+    ? usedRouteIds
+    : candidateRoutes.map((route) => route.id)
+
   function resetResults() {
     setResult(null)
     setLogEntries([])
@@ -232,7 +240,7 @@ export default function DashboardPage({ algorithm }: Props) {
     resetResults()
     setRunStatus('running')
     const startedAt = performance.now()
-    const payload = createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes)
+    const payload = createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName)
 
     try {
       const response = await planRailwayNetwork(payload)
@@ -367,7 +375,7 @@ export default function DashboardPage({ algorithm }: Props) {
           </div>
           <NetworkDiagram
             builtRouteIds={resultEdges.map((edge) => edge.id)}
-            configuredRouteIds={candidateRoutes.map((route) => route.id)}
+            configuredRouteIds={displayedRouteIds}
             routeStages={routeStages}
             selectedNodes={selectedNodes}
             onCitySelect={toggleNode}
