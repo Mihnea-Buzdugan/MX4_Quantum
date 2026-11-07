@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CircleCheck,
   Cpu,
+  History,
   Orbit,
   Menu,
   TrainFront,
@@ -16,6 +17,7 @@ const navigation = [
   { label: 'Classic Algorithm', to: '/classic-algorithm', icon: Cpu, mode: 'CLASSIC' },
   { label: 'Quantum Algorithm (Simulated)', to: '/quantum-algorithm/simulated', icon: Orbit, mode: 'SIMULATOR' },
   { label: 'Quantum Algorithm (Real Hardware)', to: '/quantum-algorithm/real-hardware', icon: Orbit, mode: 'REAL HARDWARE' },
+  { label: 'Run History', to: '/run-history', icon: History, mode: 'HISTORY' },
 ]
 
 export default function AppShell() {
@@ -23,9 +25,14 @@ export default function AppShell() {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>('realtime')
   const [runMetrics, setRunMetrics] = useState<RunMetrics | null>(null)
+  const [runHistory, setRunHistory] = useState<RunHistoryRecord[]>([])
   const location = useLocation()
   const activeWorkspace = navigation.find(({ to }) => location.pathname === to) ?? navigation[0]
   const algorithmName = activeWorkspace.label
+  const appendRunHistory = useCallback((record: RunHistoryRecord) => {
+    setRunHistory((history) => [record, ...history])
+  }, [])
+  const clearRunHistory = useCallback(() => setRunHistory([]), [])
 
   return (
     <div className="app-shell">
@@ -121,7 +128,7 @@ export default function AppShell() {
           </div>
         </header>
         <main className="page-content">
-          <Outlet context={{ simulationSpeed, setRunMetrics }} />
+          <Outlet context={{ simulationSpeed, setRunMetrics, runHistory, appendRunHistory, clearRunHistory }} />
         </main>
       </div>
     </div>
@@ -133,9 +140,22 @@ export type RunMetrics = {
   executionMs: number
   simulatedMs: number
 }
+export type RunHistoryRecord = {
+  timestamp: number
+  algorithm: string
+  speed: SimulationSpeed
+  executionMs: number
+  planStatus: 'valid' | 'invalid'
+  totalCost: number
+  totalReward: number
+  selectedRoutes: string[]
+}
 export type WorkspaceContext = {
   simulationSpeed: SimulationSpeed
   setRunMetrics: (metrics: RunMetrics | null) => void
+  runHistory: RunHistoryRecord[]
+  appendRunHistory: (record: RunHistoryRecord) => void
+  clearRunHistory: () => void
 }
 
 function formatDuration(durationMs: number | undefined) {

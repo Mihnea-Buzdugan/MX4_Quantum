@@ -369,6 +369,21 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .algorithm-run-state.complete { border-color: rgba(65,214,160,.2); color: #68d9a8; background: rgba(65,214,160,.06); }
 @keyframes algorithm-spin { to { transform: rotate(360deg); } }
 .algorithm-list-footer { min-height: 37px; border-top: 1px solid rgba(115,140,164,.1); }
+.run-history-panel { overflow: hidden; }
+.run-history-table-wrap { overflow-x: auto; }
+.run-history-table { width: 100%; min-width: 1050px; border-collapse: collapse; text-align: left; }
+.run-history-table th { height: 39px; border-bottom: 1px solid var(--line); padding: 0 12px; color: #78899b; background: rgba(255,255,255,.015); font-size: 8px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.run-history-table td { border-bottom: 1px solid rgba(115,140,164,.1); padding: 12px; color: #b6c4d0; font-size: 9px; vertical-align: top; }
+.run-history-table tbody tr:last-child td { border-bottom: 0; }
+.run-history-table td:last-child { min-width: 210px; line-height: 1.6; }
+.run-plan-status { display: inline-flex; border: 1px solid transparent; border-radius: 12px; padding: 4px 7px; font-size: 7px; font-weight: 600; white-space: nowrap; }
+.run-plan-status.valid { border-color: rgba(65,214,160,.2); color: #78dfb6; background: rgba(65,214,160,.07); }
+.run-plan-status.invalid { border-color: rgba(240,108,120,.22); color: #ff9098; background: rgba(240,108,120,.08); }
+.run-history-empty { display: grid; justify-items: center; padding: 56px 20px; text-align: center; }
+.run-history-empty .panel-icon { width: 36px; height: 36px; color: var(--cyan); }
+.run-history-empty h2 { margin: 14px 0 5px; color: #e2edf4; font-size: 14px; font-weight: 580; }
+.run-history-empty p { margin: 0; color: #8293a5; font-size: 10px; }
+.heading-actions .button:disabled { opacity: .48; cursor: default; transform: none; }
 @media (max-width: 650px) {
   .algorithm-route { grid-template-columns: 17px minmax(0,1fr) 30px 32px 57px; gap: 4px; }
   .algorithm-route .route-endpoints strong { font-size: 7px; }

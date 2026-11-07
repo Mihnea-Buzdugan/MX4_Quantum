@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useOutletContext } from 'react-router-dom'
 import NetworkDiagram from '../components/NetworkDiagram'
-import type { RunMetrics, SimulationSpeed, WorkspaceContext } from '../components/AppShell'
+import type { RunHistoryRecord, RunMetrics, SimulationSpeed, WorkspaceContext } from '../components/AppShell'
 import {
   bestPlanWithinBudget,
   cities,
@@ -64,7 +64,7 @@ function getQuantumCandidateOrder(availableRoutes: RailRoute[]) {
 export default function DashboardPage({ algorithm }: Props) {
   const [runKey, setRunKey] = useState(0)
   const [evaluation, setEvaluation] = useState<EvaluationState>(initialState)
-  const { simulationSpeed, setRunMetrics } = useOutletContext<WorkspaceContext>()
+  const { simulationSpeed, setRunMetrics, appendRunHistory } = useOutletContext<WorkspaceContext>()
   const [executionTime, setExecutionTime] = useState<{ speed: SimulationSpeed; milliseconds: number } | null>(null)
   const currentEvaluation = evaluation.speed === simulationSpeed ? evaluation : initialState
   const displayedExecutionTime = executionTime?.speed === simulationSpeed ? executionTime.milliseconds : null
@@ -137,9 +137,25 @@ export default function DashboardPage({ algorithm }: Props) {
         setExecutionTime({ speed: simulationSpeed, milliseconds: executionMs })
         const metrics: RunMetrics = { executionMs, simulatedMs }
         setRunMetrics(metrics)
+        appendRunHistory(createRunRecord(result.nextEvaluation.selectedRouteIds, simulatedMs))
         return
       }
       timeout = window.setTimeout(evaluateNextStep, 480)
+    }
+
+    function createRunRecord(selectedRouteIds: string[], executionTimeMs: number): RunHistoryRecord {
+      const selectedRoutes = routes.filter((route) => selectedRouteIds.includes(route.id))
+      const totalCost = selectedRoutes.reduce((sum, route) => sum + route.constructionCost, 0)
+      return {
+        timestamp: Date.now(),
+        algorithm: algorithmName,
+        speed: simulationSpeed,
+        executionMs: executionTimeMs,
+        planStatus: totalCost <= startingBudget ? 'valid' : 'invalid',
+        totalCost,
+        totalReward: selectedRoutes.reduce((sum, route) => sum + route.value, 0),
+        selectedRoutes: selectedRoutes.map((route) => `${route.from} → ${route.to}`),
+      }
     }
 
     timeout = window.setTimeout(() => {
@@ -160,6 +176,7 @@ export default function DashboardPage({ algorithm }: Props) {
         setExecutionTime({ speed: simulationSpeed, milliseconds: executionMs })
         const metrics: RunMetrics = { executionMs, simulatedMs }
         setRunMetrics(metrics)
+        appendRunHistory(createRunRecord(!isQuantum ? [...exactPlanIds] : [...selectedIds], simulatedMs))
       } else {
         evaluateNextStep()
       }
@@ -169,7 +186,7 @@ export default function DashboardPage({ algorithm }: Props) {
       cancelled = true
       if (timeout !== undefined) window.clearTimeout(timeout)
     }
-  }, [algorithm, evaluationOrder, isQuantum, runKey, setRunMetrics, simulationSpeed])
+  }, [algorithm, algorithmName, appendRunHistory, evaluationOrder, isQuantum, runKey, setRunMetrics, simulationSpeed])
 
   const selectedRoutes = useMemo(
     () => routes.filter((route) => currentEvaluation.selectedRouteIds.includes(route.id)),
