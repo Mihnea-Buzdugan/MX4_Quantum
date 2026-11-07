@@ -1,15 +1,19 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from app.routers import quantic_algorithm
 
-app = FastAPI(
-    title="Quantum API",
-    description="A quantum microservice",
-    version="1.0.0"
-)
-
-app.include_router(quantic_algorithm.router)
+from .routers import router
+from .services import shutdown_executor
 
 
-@app.get("/")
-def home():
-    return {"message": "Quantum API is running!"}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    shutdown_executor()
+
+
+app = FastAPI(title="Railway Planner API", version="1.0.0", lifespan=lifespan)
+app.include_router(router)
+
+# Run from the folder that contains `app/`:
+#   uvicorn app.main:app --reload

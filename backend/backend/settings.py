@@ -268,6 +268,10 @@ CACHES = {
 }
 
 
+RAILWAY_PLANNER_URL = os.getenv(
+    "RAILWAY_PLANNER_URL",
+)
+
 # --------------------------------------------------
 # PASSWORD VALIDATION
 # --------------------------------------------------
