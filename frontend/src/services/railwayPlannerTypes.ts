@@ -3,7 +3,7 @@
 
 export type PathId = number | string
 
-export type PlanStatus = 'ok' | 'infeasible' | 'pending'
+export type PlanStatus = 'ok' | 'infeasible' | 'pending' | 'disconnected' | 'no_valid_sample'
 
 export type PlanEdge = {
   id: PathId
@@ -63,6 +63,27 @@ export type QuantumStats = {
   route_qubits?: number | null
   slack_qubits?: number | null
   layers?: number | null
+  shots?: number | null
+  cobyla_maxiter?: number | null
+  valid_sample_rate?: number | null
+  connected_sample_rate?: number | null
+  approximation_ratio?: number | null
+  optimum_found?: boolean | null
+  p_optimum_qaoa?: number | null
+  mode?: string | null
+  p_valid_uniform?: number | null
+  p_valid_qaoa?: number | null
+  p_connected_qaoa?: number | null
+  top_samples?: Array<{
+    routes: PathId[]
+    count: number
+    value: number
+    cost: number
+    valid: boolean
+    connected: boolean
+  }> | null
+  reference_optimum?: { routes: PathId[]; value: number; cost: number; note?: string } | null
+  timing?: { penalty_tuning_seconds?: number; training_seconds?: number; sampling_seconds?: number } | null
   depth?: number | null // legacy name, replaced by `layers`
   quantum_budget?: number | null
   expected_energy?: number | null
@@ -73,7 +94,12 @@ export type QuantumStats = {
   exact_optimum_value?: number | null
   variables?: Record<string, PathId> | null
   penalties?: {
+    budget_encoding?: string
     lam?: number
+    lam1?: number
+    lam2?: number
+    beta?: number
+    budget_units?: number
     mu?: number
     slack_weights?: number[]
     quantum_budget_units?: number
@@ -84,6 +110,19 @@ export type QuantumStats = {
     gammas?: number[]
     betas?: number[]
     optimizer?: { method?: string; rhobeg?: number; maxiter?: number }
+    warm_start?: string
+    selected?: { strategy?: string; start?: string; layers?: number }
+    training?: Array<{
+      strategy?: string
+      layers?: number
+      start?: string
+      start_energy?: number
+      energy?: number
+      evaluations?: number
+      gammas?: number[]
+      betas?: number[]
+      selected?: boolean
+    }>
     starts?: Array<{
       kind: string
       selected: boolean
@@ -97,6 +136,9 @@ export type QuantumStats = {
     offset?: number
     linear?: Record<string, number>
     quadratic?: Record<string, number>
+    matrix?: number[][]
+    matrix_variables?: string[]
+    matrix_convention?: string
     formula?: string
     formula_expanded?: string
     formula_latex?: string
@@ -128,6 +170,7 @@ export type RailwayPlanResponse = {
   total_cost?: number | null
   total_value?: number | null
   remaining_budget?: number | null
+  runtime_seconds?: number | null
   cost_breakdown?: { quantum: number; connectors: number; extra: number } | null
   graph?: { nodes: PlanNode[]; edges: PlanEdge[] } | null
   quantum?: QuantumStats | null

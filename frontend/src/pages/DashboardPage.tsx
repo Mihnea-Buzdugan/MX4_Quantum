@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowDownRight,
+  Atom,
   CircleCheck,
   CircleX,
   Construction,
@@ -10,22 +11,34 @@ import {
   Network,
   Orbit,
   Play,
+  Repeat,
   RotateCw,
   Route,
+  Scale,
+  ScanLine,
   Target,
   Timer,
   X,
 } from 'lucide-react'
-import { useOutletContext } from 'react-router-dom'
+import { Link, useOutletContext } from 'react-router-dom'
 import IntermediateLog, { type IntermediateLogEntry } from '../components/IntermediateLog'
 import NetworkDiagram from '../components/NetworkDiagram'
 import QuantumDetails from '../components/Quantumdetails'
 import SimulationOverlay from '../components/SimulationOverlay'
+import { estimateQubits } from '../utils/qubits'
+import { makeResponseEntries, routeName } from '../utils/planLog'
 import type { RunHistoryRecord, WorkspaceContext } from '../components/AppShell'
 import { cities, modelEvaluations, routes, startingBudget } from '../data/routes'
-import { createRailwayPlanRequest, planRailwayNetwork } from '../services/railwayPlanner'
 import {
-  type Conflict,
+  createRailwayPlanRequest,
+  DEFAULT_PLANNER_OPTIONS,
+  DEFAULT_QAOA_SETTINGS,
+  planRailwayNetwork,
+  QAOA_LIMITS,
+  qaoaSettingsToOptions,
+  type QaoaSettings,
+} from '../services/railwayPlanner'
+import {
   type PathId,
   type RailwayPlanResponse,
 } from '../services/railwayPlannerTypes'
@@ -45,155 +58,29 @@ function isValidCost(value: string) {
     && /^\d+(\.\d{1,2})?$/.test(value.trim())
 }
 
+// Qubit limit the frontend sends as options.max_qubits.
+const MAX_QUBITS = DEFAULT_PLANNER_OPTIONS.max_qubits
+
+type QaoaInputs = { p: string; iterations: string; shots: string; slack: boolean }
+
+function parseWholeNumber(value: string, min: number, max: number): number | null {
+  const text = value.trim()
+  if (!/^\d+$/.test(text)) return null
+  const number = Number(text)
+  return number >= min && number <= max ? number : null
+}
+
+function parseQaoaInputs(inputs: QaoaInputs): QaoaSettings | null {
+  const p = parseWholeNumber(inputs.p, QAOA_LIMITS.p.min, QAOA_LIMITS.p.max)
+  const iterations = parseWholeNumber(inputs.iterations, QAOA_LIMITS.iterations.min, QAOA_LIMITS.iterations.max)
+  const shots = parseWholeNumber(inputs.shots, QAOA_LIMITS.shots.min, QAOA_LIMITS.shots.max)
+  return p === null || iterations === null || shots === null
+    ? null
+    : { p, iterations, shots, slack: inputs.slack }
+}
+
 function formatNumber(value: number | null | undefined) {
   return value === undefined || value === null ? '—' : Number(value.toFixed(3)).toString()
-}
-
-function formatList(values: number[] | undefined) {
-  return values && values.length > 0 ? `[${values.map((v) => Number(v.toFixed(4))).join(', ')}]` : '—'
-}
-
-function routeName(id: PathId) {
-  const route = routes.find((r) => String(r.id) === String(id))
-  return route ? `${route.from} → ${route.to}` : `route ${id}`
-}
-
-function describeConflict(conflict: Conflict) {
-  const pair = conflict.paths.map(routeName).join(' ↔ ')
-  let where = ''
-  if (conflict.type === 'too_close') {
-    const km = conflict.distance_km
-    where = km != null ? ` · ${formatNumber(km)} km apart` : conflict.distance != null ? ` · ${formatNumber(conflict.distance)} apart` : ''
-  } else if (conflict.at) {
-    where = ` · at ${conflict.at[0].toFixed(3)}, ${conflict.at[1].toFixed(3)}`
-  }
-  return `${pair} (${conflict.type}${where})`
-}
-
-function makeResponseEntries(response: RailwayPlanResponse): IntermediateLogEntry[] {
-  const entries: IntermediateLogEntry[] = [
-    {
-      label: 'Planner result',
-      message: response.status === 'ok'
-        ? `Connected network returned within the ${formatNumber(response.budget)} budget.`
-        : response.reason ?? 'The selected network cannot be completed within the available budget.',
-    },
-  ]
-
-  if (response.status === 'infeasible' && typeof response.minimum_connection_cost === 'number') {
-    entries.push({
-      label: 'Minimum connection cost',
-      message: formatNumber(response.minimum_connection_cost),
-    })
-  }
-
-  const stats = response.quantum
-  if (stats) {
-    const layers = stats.layers ?? stats.depth
-    entries.push({
-      label: 'QAOA configuration',
-      message: [
-        stats.sampler ?? (stats.skipped ? 'Skipped' : undefined),
-        stats.qubits != null ? `${stats.qubits} qubits` : undefined,
-        stats.route_qubits != null && stats.slack_qubits != null
-          ? `${stats.route_qubits} route + ${stats.slack_qubits} slack` : undefined,
-        layers != null ? `${layers} layer${layers === 1 ? '' : 's'}` : undefined,
-      ].filter(Boolean).join(' · ') || stats.reason || 'Diagnostics returned.',
-    })
-    if (typeof stats.quantum_budget === 'number') {
-      entries.push({ label: 'Quantum budget', message: formatNumber(stats.quantum_budget) })
-    }
-    if (stats.penalties) {
-      entries.push({
-        label: 'Penalty weights',
-        message: `λ ${formatNumber(stats.penalties.lam)} · μ ${formatNumber(stats.penalties.mu)} · slack weights ${stats.penalties.slack_weights?.join(', ') ?? '—'}`,
-      })
-    }
-    if (stats.angles) {
-      entries.push({
-        label: 'Optimised angles',
-        message: `γ ${formatList(stats.angles.gammas)} · β ${formatList(stats.angles.betas)}`,
-      })
-    }
-    if (stats.circuit && !stats.circuit.error) {
-      entries.push({
-        label: 'QAOA circuit',
-        message: [
-          stats.circuit.num_qubits != null ? `${stats.circuit.num_qubits} qubits` : undefined,
-          stats.circuit.depth != null ? `depth ${stats.circuit.depth}` : undefined,
-          stats.circuit.two_qubit_gates != null ? `${stats.circuit.two_qubit_gates} two-qubit gates` : undefined,
-        ].filter(Boolean).join(' · ') || 'Circuit returned.',
-      })
-    }
-    if (typeof stats.expected_energy === 'number') {
-      entries.push({ label: 'Expected energy', message: formatNumber(stats.expected_energy) })
-    }
-    if (typeof stats.feasible_sample_rate === 'number') {
-      entries.push({
-        label: 'Feasible sample rate',
-        message: `${(stats.feasible_sample_rate * 100).toFixed(2)}%`,
-      })
-    }
-    if (typeof stats.p_feasible_qaoa === 'number') {
-      entries.push({
-        label: 'QAOA feasible probability',
-        message: `${(stats.p_feasible_qaoa * 100).toFixed(2)}%${typeof stats.p_feasible_uniform === 'number' ? ` (uniform ${(stats.p_feasible_uniform * 100).toFixed(2)}%)` : ''}`,
-      })
-    }
-    if (typeof stats.best_sampled_value === 'number') {
-      entries.push({ label: 'Best sampled value', message: formatNumber(stats.best_sampled_value) })
-    }
-    if (typeof stats.exact_optimum_value === 'number') {
-      entries.push({ label: 'Exact optimum value', message: formatNumber(stats.exact_optimum_value) })
-    }
-
-    const ex = stats.execution
-    if (ex) {
-      entries.push({
-        label: 'Hardware execution',
-        message: [
-          ex.backend,
-          ex.status ? `status ${ex.status}` : undefined,
-          ex.shots != null ? `${ex.shots} shots` : undefined,
-          ex.job_id ? `job ${ex.job_id}` : undefined,
-          ex.layout_method ? `${ex.layout_method} layout` : undefined,
-          ex.isa_depth != null ? `compiled depth ${ex.isa_depth}` : undefined,
-          ex.isa_two_qubit_gates != null ? `${ex.isa_two_qubit_gates} two-qubit gates` : undefined,
-          typeof ex.estimated_success === 'number' ? `estimated success ${(ex.estimated_success * 100).toFixed(2)}%` : undefined,
-          ex.quantum_seconds != null ? `${formatNumber(ex.quantum_seconds)} s QPU time` : undefined,
-          ex.error,
-        ].filter(Boolean).join(' · '),
-      })
-    }
-  }
-
-  if (response.cost_breakdown) {
-    entries.push({
-      label: 'Cost breakdown',
-      message: `Quantum ${formatNumber(response.cost_breakdown.quantum)} · connectors ${formatNumber(response.cost_breakdown.connectors)} · extra ${formatNumber(response.cost_breakdown.extra)}`,
-    })
-  }
-
-  const conflicts = response.conflicts ?? []
-  if (conflicts.length > 0) {
-    entries.push({
-      label: `Route conflicts (${conflicts.length})`,
-      message: conflicts.map(describeConflict).join('; '),
-    })
-  }
-
-  for (const note of response.notes ?? []) {
-    entries.push({ label: 'Planner note', message: note })
-  }
-
-  for (const edge of response.graph?.edges ?? []) {
-    entries.push({
-      label: `${edge.stage} route`,
-      message: `${edge.from} → ${edge.to} · cost ${formatNumber(edge.cost)} · reward +${formatNumber(edge.value)}`,
-    })
-  }
-
-  return entries
 }
 
 export default function DashboardPage({ algorithm }: Props) {
@@ -209,6 +96,12 @@ export default function DashboardPage({ algorithm }: Props) {
   const [logEntries, setLogEntries] = useState<IntermediateLogEntry[]>([])
   const [executionTime, setExecutionTime] = useState<number | null>(null)
   const [simulationError, setSimulationError] = useState<string | null>(null)
+  const [qaoaInputs, setQaoaInputs] = useState<QaoaInputs>(() => ({
+    p: String(DEFAULT_QAOA_SETTINGS.p),
+    iterations: String(DEFAULT_QAOA_SETTINGS.iterations),
+    shots: String(DEFAULT_QAOA_SETTINGS.shots),
+    slack: DEFAULT_QAOA_SETTINGS.slack,
+  }))
 
   const algorithmName = algorithm === 'classic'
     ? 'Classic Algorithm'
@@ -243,13 +136,22 @@ export default function DashboardPage({ algorithm }: Props) {
   )
   const candidateCostsValid = candidateRoutes.length > 0
     && candidateRoutes.every((route) => isValidCost(routeCosts[route.id]))
-  const canStart = isBudgetValid && selectedNodes.length >= 2 && candidateCostsValid && !isRunning(runStatus)
+  const isQuantum = algorithm !== 'classic'
+  const qaoaSettings = parseQaoaInputs(qaoaInputs)
+  const qaoaSettingsValid = !isQuantum || qaoaSettings !== null
+  const qubitEstimate = useMemo(
+    () => estimateQubits(candidateRoutes.map((route) => route.constructionCost), numericBudget, qaoaInputs.slack),
+    [candidateRoutes, numericBudget, qaoaInputs.slack],
+  )
+  const estimatedQubits = qubitEstimate.routeQubits + qubitEstimate.slackQubits
+  const canStart = isBudgetValid && selectedNodes.length >= 2 && candidateCostsValid && qaoaSettingsValid && !isRunning(runStatus)
   const resultEdges = result?.graph?.edges ?? []
   const totalCost = result?.total_cost ?? 0
   const totalReward = result?.total_value ?? 0
   const remainingBudget = result?.remaining_budget ?? null
   const isPending = result?.status === 'pending'
   const hasPlanStatus = result !== null && !isPending
+  const noValidSample = result?.status === 'disconnected' || result?.status === 'no_valid_sample'
   const isValidPlan = result?.status === 'ok'
     && result.connected
     && typeof result.total_cost === 'number'
@@ -300,11 +202,25 @@ export default function DashboardPage({ algorithm }: Props) {
     setRouteCosts((current) => ({ ...current, [routeId]: value }))
   }
 
+  function updateQaoaInput(field: 'p' | 'iterations' | 'shots', value: string) {
+    if (isRunning(runStatus)) return
+    resetResults()
+    setQaoaInputs((current) => ({ ...current, [field]: value }))
+  }
+
+  function updateSlack(slack: boolean) {
+    if (isRunning(runStatus)) return
+    resetResults()
+    setQaoaInputs((current) => ({ ...current, slack }))
+  }
+
   function getValidationMessage() {
     if (!isBudgetValid) return 'Enter a valid budget of zero or more.'
     if (selectedNodes.length < 2) return 'Select at least two network nodes on the map.'
     if (candidateRoutes.length === 0) return 'Check at least one route that connects two selected nodes.'
     if (!candidateCostsValid) return 'Route costs must be non-negative values with at most two decimals.'
+    if (!qaoaSettingsValid) return `QAOA settings must be whole numbers: p ${QAOA_LIMITS.p.min}–${QAOA_LIMITS.p.max}, COBYLA iterations ${QAOA_LIMITS.iterations.min}–${QAOA_LIMITS.iterations.max}, shots ${QAOA_LIMITS.shots.min}–${QAOA_LIMITS.shots.max}.`
+    if (runStatus === 'infeasible' && noValidSample) return 'QAOA found no valid connected network in its samples. Try more shots, a larger p or more COBYLA iterations.'
     if (runStatus === 'infeasible') return 'The backend could not connect this network within budget; adjust nodes, routes, or costs.'
     if (runStatus === 'pending') return 'The IBM Quantum job is still running. Its job id is in the log; resubmit with that job id to collect the result.'
     if (runStatus === 'error') return 'The request failed. Check that the FastAPI planner is running and try again.'
@@ -319,7 +235,15 @@ export default function DashboardPage({ algorithm }: Props) {
     setRunStatus('running')
     const startedAt = performance.now()
     // the algorithm label also picks options.execution (real IBM hardware or the simulator)
-    const payload = createRailwayPlanRequest(numericBudget, networkCities, candidateRoutes, algorithmName)
+    // p, slack / no slack, COBYLA iterations and shots come from the QAOA settings panel
+    const payload = createRailwayPlanRequest(
+      numericBudget,
+      networkCities,
+      candidateRoutes,
+      algorithmName,
+      qaoaSettings ? qaoaSettingsToOptions(qaoaSettings) : {},
+    )
+    payload.include_qubo = true // keep the QUBO so the saved run shows it in the run history
 
     try {
       const response: RailwayPlanResponse = await planRailwayNetwork(payload)
@@ -397,6 +321,11 @@ export default function DashboardPage({ algorithm }: Props) {
         {getValidationMessage()}
       </div>
       {simulationError && <p className="simulation-error" role="alert">{simulationError}</p>}
+      {result?.plan_id != null && (
+        <p className="batch-saved-note" role="status">
+          Saved to the run history as simulation #{result.plan_id} · <Link to={`/run-history/plans/${result.plan_id}`}>open it</Link>
+        </p>
+      )}
 
       <section className="construction-scoreboard" aria-label="Algorithm plan summary">
         <article className="panel score-card score-card-budget">
@@ -435,11 +364,85 @@ export default function DashboardPage({ algorithm }: Props) {
         <article className={`panel plan-status ${!hasPlanStatus ? 'plan-status-pending' : isValidPlan ? 'plan-status-valid' : 'plan-status-invalid'}`} role="status" aria-live="polite">
           {!hasPlanStatus ? <Target size={19} /> : isValidPlan ? <CircleCheck size={19} /> : <CircleX size={19} />}
           <div>
-            <strong>{isPending ? 'IBM job pending' : !hasPlanStatus ? 'Plan not run' : isValidPlan ? 'Valid Plan' : 'Invalid Plan (Over Budget / Infeasible)'}</strong>
+            <strong>{isPending ? 'IBM job pending' : !hasPlanStatus ? 'Plan not run' : isValidPlan ? 'Valid Plan' : noValidSample ? 'Invalid Plan (No Valid QAOA Sample)' : 'Invalid Plan (Over Budget / Infeasible)'}</strong>
             <span>{isPending ? result?.reason ?? 'The hardware job is still running.' : !hasPlanStatus ? 'Run the planner to evaluate the selected network.' : isValidPlan ? 'Connected network is within budget.' : result?.reason ?? 'Planner did not return a valid connected network.'}</span>
           </div>
         </article>
       </section>
+
+      {isQuantum && (
+        <section className="construction-scoreboard qaoa-config" aria-label="QAOA settings">
+          <article className="panel score-card">
+            <label className="score-card-label" htmlFor="qaoa-p"><span className="panel-icon"><Atom size={15} /></span><span>QAOA layers (p)</span></label>
+            <input
+              id="qaoa-p"
+              className="budget-input"
+              type="number"
+              min={QAOA_LIMITS.p.min}
+              max={QAOA_LIMITS.p.max}
+              step="1"
+              value={qaoaInputs.p}
+              disabled={isRunningNow}
+              onChange={(event) => updateQaoaInput('p', event.target.value)}
+            />
+            <small>Whole number {QAOA_LIMITS.p.min}–{QAOA_LIMITS.p.max}</small>
+          </article>
+          <article className="panel score-card">
+            <label className="score-card-label" htmlFor="qaoa-slack"><span className="panel-icon"><Scale size={15} /></span><span>Budget encoding</span></label>
+            <select
+              id="qaoa-slack"
+              className="budget-input"
+              value={qaoaInputs.slack ? 'slack' : 'no-slack'}
+              disabled={isRunningNow}
+              onChange={(event) => updateSlack(event.target.value === 'slack')}
+            >
+              <option value="slack">Slack</option>
+              <option value="no-slack">No slack</option>
+            </select>
+            <small>
+              {qaoaInputs.slack
+                ? `Exact budget limit · ≈ ${qubitEstimate.routeQubits} route + ${qubitEstimate.slackQubits} slack qubits`
+                : `Penalty only, no extra qubits · ≈ ${qubitEstimate.routeQubits} qubits`}
+            </small>
+          </article>
+          <article className="panel score-card">
+            <label className="score-card-label" htmlFor="qaoa-iterations"><span className="panel-icon"><Repeat size={15} /></span><span>COBYLA iterations</span></label>
+            <input
+              id="qaoa-iterations"
+              className="budget-input"
+              type="number"
+              min={QAOA_LIMITS.iterations.min}
+              max={QAOA_LIMITS.iterations.max}
+              step="1"
+              value={qaoaInputs.iterations}
+              disabled={isRunningNow}
+              onChange={(event) => updateQaoaInput('iterations', event.target.value)}
+            />
+            <small>Per optimiser run · {QAOA_LIMITS.iterations.min}–{QAOA_LIMITS.iterations.max}</small>
+          </article>
+          <article className="panel score-card">
+            <label className="score-card-label" htmlFor="qaoa-shots"><span className="panel-icon"><ScanLine size={15} /></span><span>Number of shots</span></label>
+            <input
+              id="qaoa-shots"
+              className="budget-input"
+              type="number"
+              min={QAOA_LIMITS.shots.min}
+              max={QAOA_LIMITS.shots.max}
+              step="1"
+              value={qaoaInputs.shots}
+              disabled={isRunningNow}
+              onChange={(event) => updateQaoaInput('shots', event.target.value)}
+            />
+            <small>Measurements of the final circuit{algorithm === 'quantum-hardware' ? ' (also on IBM hardware)' : ''}</small>
+          </article>
+          {estimatedQubits > MAX_QUBITS && (
+            <p className="qaoa-config-warning" role="alert">
+              ≈ {estimatedQubits} qubits needed, but the planner allows {MAX_QUBITS}.
+              {qaoaInputs.slack && qubitEstimate.routeQubits <= MAX_QUBITS ? ' Choose "No slack" or use fewer routes.' : ' Use fewer candidate routes.'}
+            </p>
+          )}
+        </section>
+      )}
 
       <div className="construction-workspace algorithm-workspace">
         <section className="panel network-panel construction-network">

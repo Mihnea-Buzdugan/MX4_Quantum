@@ -79,7 +79,8 @@ class PlannerTimeout(PlannerError):
 
 
 # HTTP status the router should use for each result["status"].
-RESULT_HTTP_STATUS = {"ok": 200, "infeasible": 422, "pending": 202}
+RESULT_HTTP_STATUS = {"ok": 200, "infeasible": 422, "pending": 202,
+                      "disconnected": 200, "no_valid_sample": 200}
 
 
 # -----------------------------------------------------------------------------
@@ -266,7 +267,9 @@ async def plan_network(
     _check_execution_policy(req)
 
     payload = build_payload(req)
-    log.info("planning: algorithm=%r execution=%s", req.algorithm, req.options.execution)
+    opts = req.options
+    log.info("planning: algorithm=%r execution=%s p=%d slack=%s iterations=%d shots=%d",
+             req.algorithm, opts.execution, opts.qaoa_depth, opts.slack, opts.maxiter, opts.shots)
 
     # Execute the CPU-bound solver in a separate process.
     result = await _run_in_pool(solve, payload)

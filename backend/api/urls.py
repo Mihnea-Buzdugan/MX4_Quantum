@@ -10,4 +10,6 @@ urlpatterns = [
     path("railway/plan", views.railway_plan, name="railway-plan"),
     path("plans/", views.plan_list),
     path("plans/<int:pk>/", views.plan_detail),
+    path("batches/", views.batch_list),
+    path("batches/<int:pk>/", views.batch_detail),
 ]

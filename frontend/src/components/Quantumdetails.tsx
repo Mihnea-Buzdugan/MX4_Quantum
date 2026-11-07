@@ -1,7 +1,9 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, Download } from 'lucide-react'
 import type { Conflict, PathId, QuantumStats } from '../services/railwayPlannerTypes'
 import './QuantumDetails.css'
+import QuboMatrix from './QuboMatrix'
+import { CIRCUIT_LEFT, CIRCUIT_ROW, CIRCUIT_STEP, CIRCUIT_TOP, GATE_COLOR, GATE_LABEL, layoutGates, MAX_DRAWN_GATES, parseQasm3, qubitLabels } from '../utils/qasm'
 
 type Props = {
   stats: QuantumStats | null | undefined
@@ -42,66 +44,13 @@ function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
 }
 
 // ----------------------------------------------------------------------------- circuit drawing
-type GateKind = 'h' | 'rz' | 'rx' | 'rzz' | 'measure'
-type Gate = { kind: GateKind; qubits: number[]; angle?: number }
-type Placed = Gate & { col: number; lo: number; hi: number }
+const STEP = CIRCUIT_STEP
+const ROW = CIRCUIT_ROW
+const LEFT = CIRCUIT_LEFT
+const TOP = CIRCUIT_TOP
 
-const GATE_COLOR: Record<GateKind, string> = {
-  h: '#3b82f6',
-  rz: '#a855f7',
-  rzz: '#a855f7',
-  rx: '#f59e0b',
-  measure: '#9ca3af',
-}
-const GATE_LABEL: Record<GateKind, string> = { h: 'H', rz: 'Rz', rzz: 'ZZ', rx: 'Rx', measure: 'M' }
-
-/** Reads the OpenQASM 3 text produced by the planner (h, rz, rx, rzz, measure on q[i]). */
-function parseQasm3(src: string): { n: number; gates: Gate[] } {
-  const gates: Gate[] = []
-  let n = Number(/qubit\[(\d+)\]\s+q\s*;/.exec(src)?.[1] ?? 0)
-  for (const raw of src.split('\n')) {
-    const line = raw.trim()
-    const m = /^meas\[\d+\]\s*=\s*measure\s+q\[(\d+)\]/.exec(line)
-    if (m) {
-      gates.push({ kind: 'measure', qubits: [Number(m[1])] })
-      continue
-    }
-    const g = /^(h|rz|rx|rzz)(?:\(([^)]*)\))?\s+(.+);$/.exec(line)
-    if (!g) continue
-    const qubits = [...g[3].matchAll(/q\[(\d+)\]/g)].map((x) => Number(x[1]))
-    if (qubits.length === 0) continue // inside the "gate rzz ..." definition
-    const angle = g[2] !== undefined ? Number(g[2]) : undefined
-    gates.push({ kind: g[1] as GateKind, qubits, angle: Number.isFinite(angle) ? angle : undefined })
-  }
-  if (!n) n = gates.reduce((m, g) => Math.max(m, ...g.qubits), -1) + 1
-  return { n, gates }
-}
-
-function layoutGates(n: number, gates: Gate[]): { placed: Placed[]; cols: number } {
-  const free = new Array<number>(n).fill(0)
-  const placed: Placed[] = []
-  for (const g of gates.filter((x) => x.kind !== 'measure')) {
-    const lo = Math.min(...g.qubits)
-    const hi = Math.max(...g.qubits)
-    let col = 0
-    for (let q = lo; q <= hi; q++) col = Math.max(col, free[q])
-    for (let q = lo; q <= hi; q++) free[q] = col + 1
-    placed.push({ ...g, col, lo, hi })
-  }
-  const measureCol = Math.max(0, ...free)
-  for (const g of gates.filter((x) => x.kind === 'measure')) {
-    placed.push({ ...g, col: measureCol, lo: g.qubits[0], hi: g.qubits[0] })
-  }
-  return { placed, cols: measureCol + 1 }
-}
-
-const STEP = 36
-const ROW = 36
-const LEFT = 150
-const TOP = 16
-const MAX_DRAWN_GATES = 1500
-
-function CircuitDiagram({ qasm, labels }: { qasm: string; labels: string[] }) {
+// Also rendered off-screen by the batch PDF so the report shows the very same drawing.
+export function CircuitDiagram({ qasm, labels }: { qasm: string; labels: string[] }) {
   const parsed = useMemo(() => parseQasm3(qasm), [qasm])
   const { placed, cols } = useMemo(() => layoutGates(parsed.n, parsed.gates), [parsed])
 
@@ -215,7 +164,7 @@ function coefRows(obj: Record<string, number> | undefined): ReactNode[][] {
   return Object.entries(obj ?? {}).map(([k, v]) => [k, fmt(v)])
 }
 
-function QuboTab({ qubo }: { qubo: NonNullable<QuantumStats['qubo']> }) {
+function QuboTab({ qubo, describe }: { qubo: NonNullable<QuantumStats['qubo']>; describe?: (name: string) => string | undefined }) {
   return (
     <>
       <KV rows={[
@@ -229,6 +178,17 @@ function QuboTab({ qubo }: { qubo: NonNullable<QuantumStats['qubo']> }) {
       {qubo.formula_latex && <details className="qd-details"><summary>LaTeX</summary><pre className="qd-pre">{qubo.formula_latex}</pre></details>}
       {qubo.linear && <details className="qd-details"><summary>Linear coefficients</summary><Table head={['Variable', 'Coefficient']} rows={coefRows(qubo.linear)} /></details>}
       {qubo.quadratic && <details className="qd-details"><summary>Quadratic coefficients</summary><Table head={['Pair', 'Coefficient']} rows={coefRows(qubo.quadratic)} /></details>}
+      {qubo.matrix && qubo.matrix.length > 0 && (
+        <details className="qd-details" open>
+          <summary>QUBO matrix ({qubo.matrix.length} × {qubo.matrix.length})</summary>
+          <QuboMatrix
+            matrix={qubo.matrix}
+            names={qubo.matrix_variables ?? qubo.matrix.map((_, i) => `q${i}`)}
+            describe={describe}
+            convention={qubo.matrix_convention}
+          />
+        </details>
+      )}
     </>
   )
 }
@@ -255,6 +215,15 @@ function AnglesTab({ angles }: { angles: NonNullable<QuantumStats['angles']> }) 
         ['Optimiser', angles.optimizer ? `${angles.optimizer.method} · rhobeg ${angles.optimizer.rhobeg} · maxiter ${angles.optimizer.maxiter}` : undefined],
       ]} />
       <Table head={['Layer', 'γ (cost)', 'β (mixer)']} rows={g.map((gamma, i) => [i + 1, fmt(gamma, 6), fmt(b[i], 6)])} />
+      {angles.training && angles.training.length > 0 && (
+        <>
+          <h4>Optimiser runs (COBYLA)</h4>
+          <Table
+            head={['Strategy', 'Layers', 'Start', 'Start energy', 'Final energy', 'Evaluations', 'Selected']}
+            rows={angles.training.map((t) => [t.strategy ?? '—', t.layers ?? '—', t.start ?? '—', fmt(t.start_energy), fmt(t.energy), t.evaluations ?? '—', t.selected ? '✓' : ''])}
+          />
+        </>
+      )}
       {angles.starts && angles.starts.length > 0 && (
         <>
           <h4>Optimiser starts</h4>
@@ -306,17 +275,11 @@ export default function QuantumDetails({ stats, conflicts = [], routeName }: Pro
   const [chosen, setChosen] = useState<TabId>('circuit')
 
   // qubit i holds variable i: x{i} = route, s{k} = slack bit
-  const labels = useMemo(() => {
-    if (!stats) return []
-    const nq = stats.qubits ?? 0
-    const nr = stats.route_qubits ?? nq
-    return Array.from({ length: nq }, (_, i) => {
-      const name = i < nr ? `x${i}` : `s${i - nr}`
-      const v = stats.variables?.[name]
-      if (v === undefined) return `q${i} · ${name}`
-      const text = i < nr ? routeName(v) : String(v)
-      return `${name} · ${text.length > 18 ? `${text.slice(0, 17)}…` : text}`
-    })
+  const labels = useMemo(() => (stats ? qubitLabels(stats, routeName) : []), [stats, routeName])
+  const describeVariable = useCallback((name: string) => {
+    const v = stats?.variables?.[name]
+    if (v === undefined) return undefined
+    return name.startsWith('x') ? routeName(v) : String(v)
   }, [stats, routeName])
 
   if (!stats || tabs.length === 0) return null
@@ -366,7 +329,7 @@ export default function QuantumDetails({ stats, conflicts = [], routeName }: Pro
         </>
       )}
 
-      {active === 'qubo' && stats.qubo && <QuboTab qubo={stats.qubo} />}
+      {active === 'qubo' && stats.qubo && <QuboTab qubo={stats.qubo} describe={describeVariable} />}
       {active === 'ising' && stats.ising && <IsingTab ising={stats.ising} />}
       {active === 'angles' && stats.angles && <AnglesTab angles={stats.angles} />}
       {active === 'execution' && <ExecutionTab stats={stats} />}

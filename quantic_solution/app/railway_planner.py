@@ -1,14 +1,45 @@
 #!/usr/bin/env python3
 """
-Railway network planner: QAOA stage + classical completion to a connected network.
+Railway network planner with QAOA.
 
-Pipeline
+Two modes (options.mode):
+
+qaoa_only (default): QAOA chooses the WHOLE network, no classical selection, connection or repair.
+  * one qubit x_e per candidate route (+ slack qubits s_k when slack = true); the whole budget is used
+  * QUBO  E = -sum v_e x_e + BUDGET + mu*sum_{(e,f) conflict} x_e x_f + beta*COVER
+      BUDGET, slack = true : lam*(sum c_e x_e + sum w_k s_k - B)^2            exact "cost <= B"
+      BUDGET, slack = false: -lam1*h + lam2*h^2,  h = B - sum c_e x_e         unbalanced penalization
+                             (Montanez-Barrera et al. 2022), no extra qubits, "<=" only approximately
+      COVER (cover_cities) : sum over cities v of 1 - d_v + d_v(d_v - 1)/|S_v|, d_v = routes at v:
+                             1 for a city without a route, 0 for 1 or all |S_v| of its routes
+    "every city connected" is not a quadratic function, so the QUBO only pushes towards covering
+    every city; connectivity is checked on the samples.
+  * penalty weights: exhaustive check over all 2^R route subsets; the smallest Ising scale whose
+    QUBO minima are all valid (preferring weights whose minimum is the best connected network)
+  * answer = the best measured sample that is within budget, conflict-free AND connected
+    (status "ok"); otherwise the best valid sample (status "disconnected") or nothing
+    ("no_valid_sample"), both exit code 4. The exact optimum is reported for comparison only.
+  * limit: routes (+ slack qubits) <= max_qubits (default 22; exact simulation needs 2^n amplitudes)
+
+  The four QAOA settings, in the JSON options or on the command line (command line wins):
+    p           "p" / "qaoa_depth"        --p 2           QAOA layers
+    slack       "slack": true | false     --slack / --no-slack
+    shots       "shots"                   --shots 4096
+    iterations  "iterations" / "maxiter"  --iterations 300   COBYLA iterations per optimiser run
+
+hybrid: the earlier two-stage planner, kept for large maps and for the classical benchmark:
   1. Feasibility check: the candidate paths must be able to connect every node, and a
      conflict-free spanning network must fit in the budget.
   2. Quantum stage (QAOA): choose routes that maximise value, spending AT MOST
      quantum_fraction * budget (default 80 %), never building both routes of a conflict pair.
      QUBO:  E(x,s) = -sum v_i x_i + lam*(sum c_i x_i + sum w_k s_k - B_q)^2 + mu*sum_{(i,j) in P} x_i x_j
      Slack bits s_k (bounded-binary weights w_k) make the budget a true "<=" constraint.
+     Angles are trained with two warm-ups and the lower energy wins (option warm_start):
+       interp   p = 1 by a grid scan over its whole distinct range (beta in [0, pi/2], gamma of both
+                signs) refined by COBYLA; every next depth starts from the INTERP extension of the
+                previous optimum and re-optimises ALL angles;
+       previous the earlier multi-start warm-up: 3 annealing ramps + 3 seeded random starts at full
+                depth, each refined by COBYLA.
   3. Classical stage: with the remaining budget, connect ALL nodes into one network
      (cheapest-first spanning-forest completion, conflict-aware). If that is impossible with the
      quantum selection, quantum routes are dropped (lowest value per cost first) until it is.
@@ -23,9 +54,13 @@ Input (JSON file path as argument, or JSON on stdin):
            # "id" defaults to the list index, "value" defaults to 1
   "conflict_pairs": [[0, 1]],                    # optional, rarely needed: extra NON-geometric conflicts
   "options": {                                   # all optional
-    "quantum_fraction": 0.8, "qaoa_depth": 2, "shots": 2048, "seed": 2026,
-    "max_qubits": 16, "restarts": 6, "maxiter": 300,
-    "use_leftover_for_value": true,
+    "mode": "qaoa_only",                         # or "hybrid"
+    "p": 2, "slack": true, "shots": 2048, "iterations": 300, "seed": 2026,
+    "max_qubits": 22,                            # default 22 (qaoa_only) / 16 (hybrid)
+    "cover_cities": true,                        # qaoa_only: penalty for a city without a route
+    "quantum_fraction": 0.8,                     # hybrid only
+    "warm_start": "auto",                        # "auto" | "both" | "interp" | "previous" (train_qaoa)
+    "use_leftover_for_value": true,              # hybrid only
     "auto_conflicts": true,                      # detect conflict pairs from the node coordinates
     "coordinate_system": "lonlat",               # "lonlat" (degrees) or "xy" (planar units)
     "min_clearance": 0,                          # also conflict if closer than this (km, or xy units)
@@ -46,13 +81,15 @@ Paths that only meet at a shared city are NOT in conflict (that is a normal junc
 Output (JSON, compact: small objects on one line; --format pretty|min to change):
   status, connected, total_cost, total_value, remaining_budget, cost_breakdown, budget,
   conflicts  [{paths, type, at}] detected (and manual) conflict pairs,
-  graph      {nodes, edges (stage = quantum | connector | extra)},
-  quantum    QAOA statistics and intermediate results:
+  graph      {nodes, edges (stage = quantum | connector | extra; qaoa_only: always quantum)},
+  quantum    QAOA statistics and intermediate results (qaoa_only adds p_valid_qaoa, p_connected_qaoa,
+             p_optimum_qaoa, *_sample_rate, approximation_ratio, reference_optimum, top_samples):
     variables  x_i -> route id, s_k -> slack weight (qubit i holds variable i)
     penalties  lam, mu, slack weights, lam_ladder {lam: energy minimum feasible?}
-    qubo       offset, linear, quadratic, formula (compact / expanded / LaTeX), energy_range
+    qubo       offset, linear, quadratic, matrix (one row per variable), formula (compact /
+               expanded / LaTeX), energy_range
     ising      constant, scale, h, J, formula (plain / LaTeX); y_i = (1 - Z_i)/2
-    angles     gammas, betas (layer 1 first) and every optimiser start
+    angles     gammas, betas (layer 1 first), winning warm-up, training log (one row per run)
     circuit    size statistics and OpenQASM with the optimised angles
     execution  (IBM runs only) backend, job_id, physical qubits, compiled depth / two-qubit gates,
                estimated success, layout method, status, quantum_seconds
@@ -69,7 +106,11 @@ Running on IBM Quantum hardware (options.execution = "ibm"):
     status is "pending" (exit 3): rerun with the same input plus options.ibm_job_id to collect it
   * execution = "ibm_fake" runs the same path on a local noisy copy of a device (e.g. FakeTorino)
     without credentials, for testing
-Exit code: 0 = ok, 2 = infeasible, 3 = IBM job still pending, 1 = invalid input / internal error.
+Exit code: 0 = ok, 2 = infeasible, 3 = IBM job still pending, 4 = qaoa_only found no connected
+valid sample (status disconnected / no_valid_sample), 1 = invalid input / internal error.
+
+Run:  python railway_planner.py input.json -o result.json
+      python railway_planner.py input.json --p 2 --no-slack --shots 4096 --iterations 200
 """
 from __future__ import annotations
 
@@ -87,8 +128,17 @@ from scipy.optimize import minimize
 log = logging.getLogger("railway_planner")
 
 DEFAULT_OPTIONS = dict(
-    quantum_fraction=0.8, qaoa_depth=2, shots=2048, seed=2026, max_qubits=16,
-    restarts=6, maxiter=300, use_leftover_for_value=True,
+    # ---- the four QAOA knobs (also on the command line: --p, --slack/--no-slack, --shots, --iterations)
+    qaoa_depth=2,                     # p = number of QAOA layers            (alias "p")
+    slack=True,                       # budget as slack bits (True) or unbalanced penalization (False)
+    shots=2048,                       # measurements of the final circuit
+    maxiter=300,                      # COBYLA iterations per optimiser run  (alias "iterations")
+    # ---- what is solved
+    mode="qaoa_only",                 # "qaoa_only": QAOA picks the whole network | "hybrid": QAOA + classical
+    cover_cities=True,                # qaoa_only: QUBO penalty for a city without any route
+    quantum_fraction=0.8,             # hybrid only
+    seed=2026, max_qubits=None,       # None = 22 in qaoa_only, 16 in hybrid
+    warm_start="auto", use_leftover_for_value=True,   # auto = "both" up to 16 qubits, else "interp"
     auto_conflicts=True, coordinate_system="lonlat", min_clearance=0.0,
     embedding=False, include_circuit=True, circuit_formats=["qasm3"],
     # ---- where the final circuit is sampled
@@ -103,6 +153,9 @@ DEFAULT_OPTIONS = dict(
     ibm_job_id="",                    # fetch an already submitted job instead of submitting a new one
     ibm_fallback=False,               # on IBM failure/timeout: use (clearly labelled) simulator samples
 )
+OPTION_ALIASES = {"p": "qaoa_depth", "layers": "qaoa_depth", "iterations": "maxiter",
+                  "cobyla_iterations": "maxiter", "cobyla_maxiter": "maxiter", "nr_shots": "shots"}
+MODES = {"qaoa_only", "hybrid"}
 CIRCUIT_FORMATS = {"qasm3", "qasm2", "qasm3_parameterized"}
 EXECUTIONS = {"simulator", "ibm", "ibm_fake"}
 
@@ -180,7 +233,29 @@ def parse_input(data: dict):
     user_opts = dict(data.get("options", {}) or {})
     if "auto_conflicts_from_crossings" in user_opts:          # old option name
         user_opts.setdefault("auto_conflicts", user_opts.pop("auto_conflicts_from_crossings"))
+    for alias, key in OPTION_ALIASES.items():
+        if alias in user_opts:
+            user_opts[key] = user_opts.pop(alias)
     opts.update(user_opts)
+    if opts["mode"] not in MODES:
+        raise InputError(f"mode must be one of {sorted(MODES)}")
+    for key, low in (("qaoa_depth", 1), ("shots", 1), ("maxiter", 1)):
+        try:
+            val = opts[key]
+            if isinstance(val, bool) or float(val) != int(val) or int(val) < low:
+                raise ValueError
+            opts[key] = int(val)
+        except (TypeError, ValueError):
+            name = {"qaoa_depth": "p (qaoa_depth)", "maxiter": "iterations (maxiter)"}.get(key, key)
+            raise InputError(f"{name} must be a whole number >= {low}") from None
+    if isinstance(opts["slack"], str) and opts["slack"].lower() in ("true", "false", "slack", "no_slack", "no-slack"):
+        opts["slack"] = opts["slack"].lower() in ("true", "slack")
+    if not isinstance(opts["slack"], bool):
+        raise InputError("slack must be true (slack bits) or false (no slack: unbalanced penalization)")
+    if opts["max_qubits"] is None:
+        opts["max_qubits"] = 22 if opts["mode"] == "qaoa_only" else 16
+    if not 1 <= int(opts["max_qubits"]) <= 26:
+        raise InputError("max_qubits must be between 1 and 26 (exact simulation needs 2^n amplitudes)")
     if not 0 <= float(opts["quantum_fraction"]) <= 1:
         raise InputError("quantum_fraction must be between 0 and 1")
     if opts["coordinate_system"] not in ("lonlat", "xy"):
@@ -189,6 +264,8 @@ def parse_input(data: dict):
         raise InputError("min_clearance must be non-negative")
     if not set(opts["circuit_formats"]) <= CIRCUIT_FORMATS:
         raise InputError(f"circuit_formats must be a subset of {sorted(CIRCUIT_FORMATS)}")
+    if opts["warm_start"] not in ("auto", "both", "interp", "previous"):
+        raise InputError("warm_start must be 'auto', 'both', 'interp' or 'previous'")
     if opts["execution"] not in EXECUTIONS:
         raise InputError(f"execution must be one of {sorted(EXECUTIONS)}")
     if opts["ibm_layout"] not in ("best", "auto", "compact"):
@@ -381,19 +458,160 @@ def qubo_to_ising(q):
 
 # --------------------------------------------------------------------------- QAOA
 def qaoa_probabilities(angles, energies, n, scale):
-    """Exact QAOA state (numpy). Equivalent to the Qiskit circuit up to a global phase."""
+    """Exact QAOA state (numpy). Equivalent to the Qiskit circuit up to a global phase.
+
+    Cost layer: multiply amplitude k by exp(-i*gamma*E_k/scale). Mixer: RX(2*beta) on every qubit.
+    The mixer is applied to 4 qubits at a time: viewing psi as (2^(n-i-g), 2^g, 2^i) puts bits
+    i..i+g-1 of the index on the middle axis, and one matrix product with the 2^g x 2^g Kronecker
+    power of RX does all g qubits in one pass (about 4x faster than one qubit per pass)."""
     psi = np.full(2 ** n, 2 ** (-n / 2), dtype=complex)
     for layer in range(len(angles) // 2):
         gamma, beta = angles[2 * layer], angles[2 * layer + 1]
-        psi *= np.exp(-1j * gamma * energies / scale)
+        psi *= np.exp((-1j * gamma / scale) * energies)
         c, s = np.cos(beta), -1j * np.sin(beta)          # RX(2 beta) = cos b I - i sin b X
-        t = psi.reshape((2,) * n)
-        for ax in range(n):
-            t0 = np.take(t, 0, axis=ax); t1 = np.take(t, 1, axis=ax)
-            t = np.stack([c * t0 + s * t1, s * t0 + c * t1], axis=ax)
-        psi = t.reshape(-1)
+        rx = np.array([[c, s], [s, c]])
+        i = 0
+        while i < n:
+            g = min(4, n - i)
+            m = rx
+            for _ in range(g - 1):
+                m = np.kron(m, rx)
+            psi = np.matmul(m, psi.reshape(-1, 2 ** g, 2 ** i)).reshape(-1)
+            i += g
     p = np.abs(psi) ** 2
     return p / p.sum()
+
+
+def qubo_energies_fast(q, n):
+    """E(y) for every bitstring y (index k, bit i = qubit i) without the 2^n x n bit table."""
+    k = np.arange(2 ** n, dtype=np.int64)
+    bits = [((k >> i) & 1).astype(bool) for i in range(n)]
+    E = np.full(2 ** n, float(q["offset"]))
+    lin, quad = q["linear"], q["quadratic"]
+    for i in range(n):
+        if lin[i] != 0:
+            E[bits[i]] += lin[i]
+    for i, j in zip(*np.nonzero(quad)):
+        E[bits[i] & bits[j]] += quad[i, j]
+    return E
+
+
+def interp_angles(theta):
+    """INTERP (Zhou et al., PRX 2020): extend optimal depth-p angles to a depth-(p+1) start,
+    new_i = (i/p) theta_{i-1} + ((p-i)/p) theta_i for i = 0..p, with theta_{-1} = theta_p = 0.
+    p = 1 -> 2 simply repeats the layer: (g, g), (b, b)."""
+    theta = np.asarray(theta, float)
+    p = len(theta)
+    pad = np.concatenate([[0.0], theta, [0.0]])
+    return np.array([(i / p) * pad[i] + ((p - i) / p) * pad[i + 1] for i in range(p + 1)])
+
+
+def train_qaoa(E, n, scale, depth, maxiter, warm_start="both", seed=2026):
+    """Train the QAOA angles with one or both warm-up strategies and keep the lowest energy.
+
+    "interp"   : layer-wise warm start (train_qaoa_warm_start below).
+    "previous" : the earlier multi-start warm-up at full depth: three annealing-shaped ramps
+                 (dt = 0.02, 0.05, 0.1) plus three seeded random starts, each refined by COBYLA.
+                 The ramps use gamma < 0, beta > 0: the sign that follows the annealing path to the
+                 LOWEST energy (the very first version used gamma > 0, which starts uphill).
+    "both"     : run both and keep the better result.
+    "auto"     : "both" up to 16 qubits, "interp" above (default).
+    Returns (angles, training log); every log row says which strategy produced it and the row of
+    the winning strategy has selected = true."""
+    def objective(x):
+        return float(qaoa_probabilities(x, E, n, scale) @ E)
+    r6 = lambda v: [round(float(a), 6) for a in v]
+    if warm_start == "auto":                  # "previous" = 6 full-depth runs: too slow above 16 qubits
+        warm_start = "both" if n <= 16 else "interp"
+    grid = (25, 13) if n <= 16 else (13, 7)   # p = 1 grid scan, coarser for big state vectors
+    candidates, rows = [], []
+    if warm_start in ("interp", "both"):
+        ang, log_rows = train_qaoa_warm_start(E, n, scale, depth, maxiter, grid=grid)
+        for r in log_rows:
+            r["strategy"] = "interp"
+        rows += log_rows
+        candidates.append((objective(ang), ang, len(rows) - 1))
+    if warm_start in ("previous", "both"):
+        rng = np.random.default_rng(seed)
+        k = np.arange(1, depth + 1) / (depth + 1)
+        starts = []
+        for dt in (0.02, 0.05, 0.1):
+            x = np.empty(2 * depth); x[0::2] = -4 * dt * k; x[1::2] = 12 * dt * (1 - k)
+            starts.append((f"ramp dt={dt}", x))
+        for _ in range(3):
+            x = np.empty(2 * depth); x[0::2] = rng.uniform(-0.3, 0.3, depth); x[1::2] = rng.uniform(0, np.pi / 2, depth)
+            starts.append(("random", x))
+        for kind, x0 in starts:
+            r = minimize(objective, x0, method="COBYLA", options={"maxiter": maxiter, "rhobeg": 0.1})
+            rows.append(dict(strategy="previous", layers=depth, start=kind, start_energy=round(objective(x0), 6),
+                             energy=round(float(r.fun), 6), evaluations=int(r.nfev),
+                             gammas=r6(r.x[0::2]), betas=r6(r.x[1::2])))
+            candidates.append((float(r.fun), np.asarray(r.x, float), len(rows) - 1))
+    if not candidates:
+        raise InputError("warm_start must be 'interp', 'previous' or 'both'")
+    energy, angles, win = min(candidates, key=lambda c: c[0])
+    for i, r in enumerate(rows):
+        r["selected"] = i == win
+    log.info("QAOA training: best expected energy %.4f from %s (%s)", energy, rows[win]["strategy"], rows[win]["start"])
+    return angles, rows
+
+
+def train_qaoa_warm_start(E, n, scale, depth, maxiter, grid=(25, 13), gamma_max=1.2):
+    """Layer-wise warm start.
+
+    p = 1: grid scan of gamma in [-gamma_max, gamma_max] x beta in [0, pi/2] (with the time-reversal
+    symmetry F(g, b) = F(-g, -b) and the period pi in beta this covers every distinct p = 1 circuit),
+    then COBYLA from the two best grid points.
+    p -> p+1: start from interp_angles of the depth-p optimum and re-optimise ALL 2(p+1) angles.
+    Appending an empty layer (gamma = beta = 0) is NOT used: it is a stationary point of the deeper
+    landscape (F(g1, b1, 0, b2) = F1(g1, b1 + b2)), so the optimiser would not move.
+    Safeguard: a deeper result is only kept if it is not worse than the shallower optimum (which the
+    deeper circuit can always reproduce by appending gamma = beta = 0).
+    Returns (angles as [g1, b1, g2, b2, ...], training log)."""
+    def objective(x):
+        return float(qaoa_probabilities(x, E, n, scale) @ E)
+    r6 = lambda v: [round(float(a), 6) for a in v]
+    log_rows = []
+
+    # ---- depth 1: grid + refine
+    gs = np.linspace(-gamma_max, gamma_max, grid[0])
+    bs = np.linspace(0.0, np.pi / 2, grid[1])
+    vals = np.array([[objective(np.array([g, b])) for b in bs] for g in gs])
+    order = np.argsort(vals, axis=None)
+    tops, picked = [], []
+    for flat in order:                      # two best grid points that are not neighbours
+        gi, bi = np.unravel_index(flat, vals.shape)
+        if all(abs(gi - a) > 1 or abs(bi - b) > 1 for a, b in picked):
+            picked.append((gi, bi)); tops.append(np.array([gs[gi], bs[bi]]))
+        if len(tops) == 2:
+            break
+    runs = [minimize(objective, x0, method="COBYLA", options={"maxiter": maxiter, "rhobeg": 0.05}) for x0 in tops]
+    best = min(runs, key=lambda r: r.fun)
+    theta_g, theta_b = np.array([best.x[0]]), np.array([best.x[1]])
+    f_best = float(best.fun)
+    log_rows.append(dict(layers=1, start="grid scan", grid_points=int(vals.size),
+                         start_energy=round(float(vals.min()), 6), energy=round(f_best, 6),
+                         evaluations=int(vals.size + sum(r.nfev for r in runs)),
+                         gammas=r6(theta_g), betas=r6(theta_b)))
+
+    # ---- depth 2..p: INTERP warm start, re-optimise everything
+    for p in range(2, depth + 1):
+        x0 = np.empty(2 * p)
+        x0[0::2], x0[1::2] = interp_angles(theta_g), interp_angles(theta_b)
+        r = minimize(objective, x0, method="COBYLA", options={"maxiter": maxiter, "rhobeg": 0.1})
+        kept = r.fun <= f_best + 1e-9
+        if kept:
+            theta_g, theta_b, f_best = r.x[0::2].copy(), r.x[1::2].copy(), float(r.fun)
+        else:                               # never worse than the shallower circuit
+            theta_g, theta_b = np.append(theta_g, 0.0), np.append(theta_b, 0.0)
+        log_rows.append(dict(layers=p, start="INTERP", start_energy=round(objective(x0), 6),
+                             energy=round(f_best, 6), evaluations=int(r.nfev),
+                             improved=bool(kept), gammas=r6(theta_g), betas=r6(theta_b)))
+        log.info("QAOA depth %d: expected energy %.4f", p, f_best)
+
+    angles = np.empty(2 * depth)
+    angles[0::2], angles[1::2] = theta_g, theta_b
+    return angles, log_rows
 
 
 def qaoa_circuit(ising, angles, measure=True):
@@ -440,7 +658,6 @@ def sample_counts(ising, angles, probs, shots, seed):
 
 
 def run_quantum_stage(paths, conflicts, budget, opts):
-    rng = np.random.default_rng(opts["seed"])
     bq = float(opts["quantum_fraction"]) * budget
     cand = [p for p in paths if p["cost"] <= bq + 1e-9]
     costs_all, unit = to_integer_units([p["cost"] for p in cand] or [0.0])
@@ -491,23 +708,12 @@ def run_quantum_stage(paths, conflicts, budget, opts):
     ising = qubo_to_ising(qubo)
     scale = max(1.0, float(np.max(np.abs(ising["h"]))), float(np.max(np.abs(ising["J"]))))
 
-    p_depth = int(opts["qaoa_depth"])
-    def objective(angles):
-        return float(qaoa_probabilities(angles, E, n, scale) @ E)
-    starts, kinds = [], []
-    for dt in (0.02, 0.05, 0.1):
-        k = np.arange(1, p_depth + 1) / (p_depth + 1)
-        x = np.empty(2 * p_depth); x[0::2] = 4 * dt * k; x[1::2] = 12 * dt * (1 - k); starts.append(x)
-        kinds.append(f"ramp dt={dt}")
-    for _ in range(max(0, int(opts["restarts"]) - 3)):
-        x = np.empty(2 * p_depth); x[0::2] = rng.uniform(0, .3, p_depth)
-        x[1::2] = rng.uniform(0, np.pi / 2, p_depth); starts.append(x)
-        kinds.append("random")
-    runs = [minimize(objective, s, method="COBYLA",
-                     options={"maxiter": int(opts["maxiter"]), "rhobeg": .1}) for s in starts]
-    best_idx = int(np.argmin([r.fun for r in runs]))
-    angles = np.asarray(runs[best_idx].x, float)
+    import time
+    t_train = time.perf_counter()
+    angles, training = train_qaoa(E, n, scale, int(opts["qaoa_depth"]), int(opts["maxiter"]),
+                                  str(opts["warm_start"]), int(opts["seed"]))
     probs = qaoa_probabilities(angles, E, n, scale)
+    t_sample = time.perf_counter()
     execution = None
     if opts["execution"] == "simulator":
         counts, sampler = sample_counts(ising, angles, probs, int(opts["shots"]), int(opts["seed"]))
@@ -519,6 +725,8 @@ def run_quantum_stage(paths, conflicts, budget, opts):
             notes.append("IBM execution failed or timed out; samples come from the local SIMULATOR "
                          "(see quantum.execution.error).")
 
+    timing = dict(training_seconds=round(t_sample - t_train, 3),
+                  sampling_seconds=round(time.perf_counter() - t_sample, 3))   # IBM: includes queue time
     shots = sum(counts.values())
     feas_samples = [(c, k) for k, c in counts.items() if feasible_state[k]]
     chosen = []
@@ -528,7 +736,7 @@ def run_quantum_stage(paths, conflicts, budget, opts):
     opt_val = float(value_state[feasible_state].max())
     names = [f"x{i}" for i in range(nr)] + [f"s{k}" for k in range(ns)]
     stats = dict(
-        sampler=sampler, qubits=n, route_qubits=nr, slack_qubits=ns, layers=p_depth, quantum_budget=bq,
+        mode="hybrid", sampler=sampler, qubits=n, route_qubits=nr, slack_qubits=ns, layers=int(opts["qaoa_depth"]), quantum_budget=bq,
         expected_energy=float(probs @ E),
         p_feasible_uniform=float(feasible_state.mean()),
         p_feasible_qaoa=float(probs[feasible_state].sum()),
@@ -537,18 +745,25 @@ def run_quantum_stage(paths, conflicts, budget, opts):
         exact_optimum_value=opt_val,
         variables={**{f"x{i}": p["id"] for i, p in enumerate(cand)},
                    **{f"s{k}": f"slack {w}" for k, w in enumerate(slack)}},
+        timing=timing,
     )
     if execution is not None:
         stats["execution"] = execution
     stats.update(intermediate_results(
         cand, costs_int, values, slack, unit, bq_int, conf_idx, names, qubo, ising, scale,
-        lam, mu, ladder, angles, starts, kinds, runs, best_idx, E, opts))
+        lam, mu, ladder, angles, training, E, opts))
     if opts.get("embedding"):
         stats["embedding"] = compact_embedding(ising, angles, int(opts["seed"]))
     return chosen, stats, notes
 
 
 # --------------------------------------------------------------------------- intermediate results
+def _clean(c):
+    """Number for the JSON matrix: whole numbers without '.0' so rows stay short."""
+    c = float(c)
+    return int(c) if c.is_integer() else round(c, 10)
+
+
 def _num(c):
     return f"{float(c):.10g}"
 
@@ -581,21 +796,15 @@ def _tex(name):            # 'x10' -> 'x_{10}'
 
 
 def intermediate_results(cand, costs_int, values, slack, unit, bq_int, conf_idx, names, qubo, ising,
-                         scale, lam, mu, ladder, angles, starts, kinds, runs, best_idx, E, opts):
-    """Everything between the input and the chosen routes: penalties, QUBO, Ising, angles, circuit."""
-    n, nr = len(names), len(cand)
-    lin, quad = qubo["linear"], qubo["quadratic"]
-    h, J, const = ising["h"], ising["J"], ising["constant"]
-    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+                         scale, lam, mu, ladder, angles, training, E, opts):
+    """Hybrid mode: penalties and the compact QUBO formula, then the shared blocks (quantum_blocks)."""
+    nr = len(cand)
     xs, ss = names[:nr], names[nr:]
-
     # ---- penalties: lam = smallest ladder value whose energy minima are all feasible; mu = max value + 1
     penalties = dict(
         lam=lam, mu=mu, slack_weights=list(slack), quantum_budget_units=bq_int, cost_unit_scale=unit,
         lam_ladder={_num(r["lam"]): r["energy_minimum_feasible"] for r in ladder},
     )
-
-    # ---- QUBO
     value_txt = _poly([(v, x) for v, x in zip(values, xs)])
     budget_txt = _poly([(c, x) for c, x in zip(costs_int, xs)] + [(w, s) for w, s in zip(slack, ss)])
     conf_txt = " + ".join(f"{names[i]}*{names[j]}" for i, j in conf_idx) or "0"
@@ -603,18 +812,36 @@ def intermediate_results(cand, costs_int, values, slack, unit, bq_int, conf_idx,
     budget_tex = _poly([(c, _tex(x)) for c, x in zip(costs_int, xs)] +
                        [(w, _tex(s)) for w, s in zip(slack, ss)], latex=True)
     conf_tex = " + ".join(f"{_tex(names[i])}{_tex(names[j])}" for i, j in conf_idx) or "0"
+    formula = (f"E = -({value_txt}) + {_num(lam)}*({budget_txt} - {bq_int})^2 + {_num(mu)}*({conf_txt})")
+    formula_latex = (r"E(x,s) = -\left(" + value_tex + r"\right) + " + _num(lam) + r"\left(" + budget_tex +
+                     f" - {bq_int}" + r"\right)^2 + " + _num(mu) + r"\left(" + conf_tex + r"\right)")
+    return dict(penalties=penalties, **quantum_blocks(names, qubo, ising, scale, E, angles, training, opts,
+                                                      formula, formula_latex))
+
+
+def quantum_blocks(names, qubo, ising, scale, E, angles, training, opts, formula, formula_latex):
+    """QUBO (coefficients, matrix, formulas), Ising Hamiltonian, trained angles and the circuit."""
+    n = len(names)
+    lin, quad = qubo["linear"], qubo["quadratic"]
+    h, J, const = ising["h"], ising["J"], ising["constant"]
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+
+    # ---- QUBO
     expanded = _poly([(lin[i], names[i]) for i in range(n)] +
                      [(quad[i, j], f"{names[i]}*{names[j]}") for i, j in pairs])
     qubo_out = dict(
         offset=float(qubo["offset"]),
         linear={names[i]: float(lin[i]) for i in range(n) if lin[i] != 0},
         quadratic={f"{names[i]}*{names[j]}": float(quad[i, j]) for i, j in pairs if quad[i, j] != 0},
-        formula=(f"E = -({value_txt}) + {_num(lam)}*({budget_txt} - {bq_int})^2"
-                 f" + {_num(mu)}*({conf_txt})"),
+        matrix_variables=names,
+        matrix_convention=("upper-triangular Q: row/column order = matrix_variables, diagonal Q[i][i] = linear "
+                           "coefficient of y_i, Q[i][j] (i < j) = coefficient of y_i*y_j, below the diagonal 0; "
+                           "E(y) = offset + y^T Q y (bits, so y_i^2 = y_i)"),
+        matrix=[[_clean(lin[i]) if i == j else (_clean(quad[i, j]) if j > i else 0) for j in range(n)]
+                for i in range(n)],
+        formula=formula,
         formula_expanded="E = " + _with_constant(qubo["offset"], expanded),
-        formula_latex=(r"E(x,s) = -\left(" + value_tex + r"\right) + " + _num(lam) + r"\left(" +
-                       budget_tex + f" - {bq_int}" + r"\right)^2 + " + _num(mu) + r"\left(" +
-                       conf_tex + r"\right)"),
+        formula_latex=formula_latex,
         energy_range=[float(E.min()), float(E.max())],
     )
 
@@ -632,15 +859,12 @@ def intermediate_results(cand, costs_int, values, slack, unit, bq_int, conf_idx,
 
     # ---- angles (layer 1 acts first; RZ(2*gamma*h/scale), RZZ(2*gamma*J/scale), RX(2*beta))
     p = len(angles) // 2
-    r6 = lambda v: [round(float(a), 6) for a in v]
     angles_out = dict(
         gammas=[float(a) for a in angles[0::2]], betas=[float(a) for a in angles[1::2]],
-        optimizer=dict(method="COBYLA", rhobeg=0.1, maxiter=int(opts["maxiter"])),
-        starts=[dict(kind=kinds[k], selected=(k == best_idx),
-                     energy=round(float(runs[k].fun), 6), evaluations=int(runs[k].nfev),
-                     start_gammas=r6(starts[k][0::2]), start_betas=r6(starts[k][1::2]),
-                     final_gammas=r6(runs[k].x[0::2]), final_betas=r6(runs[k].x[1::2]))
-                for k in range(len(starts))],
+        warm_start=opts.get("warm_start", "auto"),
+        selected=next(({"strategy": r["strategy"], "start": r["start"], "layers": r["layers"]}
+                       for r in training if r.get("selected")), None),
+        training=training,
     )
 
     # ---- circuit
@@ -667,8 +891,7 @@ def intermediate_results(cand, costs_int, values, slack, unit, bq_int, conf_idx,
                 circuit_out["qasm3_parameterized"] = qasm3.dumps(qaoa_circuit(ising, symbols, measure=True))
         except Exception as exc:   # qiskit missing or export failed: keep the rest of the output
             circuit_out = dict(error=f"circuit export unavailable: {exc}")
-    return dict(penalties=penalties, qubo=qubo_out, ising=ising_out, angles=angles_out,
-                circuit=circuit_out)
+    return dict(qubo=qubo_out, ising=ising_out, angles=angles_out, circuit=circuit_out)
 
 
 # --------------------------------------------------------------------------- IBM Quantum hardware
@@ -874,6 +1097,38 @@ def _counts_from_result(pub_result, n):
     return counts
 
 
+def job_usage(job, tries=6, wait=5.0):
+    """Billed QPU time of a finished job. IBM fills in usage a little after the result is ready
+    (right after completion it often still reads 0), so poll briefly. Returns
+    quantum_seconds (None if IBM has not reported it yet) and the job's running time from its
+    timestamps. Re-running with ibm_job_id later reads the final figure without a new job."""
+    import time
+    from datetime import datetime
+    out = dict(quantum_seconds=None)
+    for attempt in range(tries):
+        try:
+            m = job.metrics() or {}
+        except Exception:
+            m = {}
+        usage = m.get("usage") or {}
+        qs = usage.get("quantum_seconds", usage.get("seconds"))
+        ts = m.get("timestamps") or {}
+        try:
+            run = (datetime.fromisoformat(ts["finished"].replace("Z", "+00:00")) -
+                   datetime.fromisoformat(ts["running"].replace("Z", "+00:00"))).total_seconds()
+            out["running_seconds"] = round(run, 3)
+        except Exception:
+            pass
+        if qs:                                           # reported (> 0)
+            out["quantum_seconds"] = float(qs)
+            return out
+        if attempt < tries - 1:
+            time.sleep(wait)
+    out["usage_note"] = ("IBM had not reported the billed usage yet; rerun with options.ibm_job_id "
+                         "to read it (no new job, no QPU cost)")
+    return out
+
+
 def run_on_ibm(ising, angles, probs, opts):
     """Run the bound QAOA circuit on an IBM backend (or a local noisy fake) and return its counts.
 
@@ -931,12 +1186,8 @@ def run_on_ibm(ising, angles, probs, opts):
             result = job.result()
         counts = _counts_from_result(result[0], n)
         info["status"] = "done"
-        try:
-            usage = job.metrics().get("usage", {})
-            if usage:
-                info["quantum_seconds"] = usage.get("quantum_seconds", usage.get("seconds"))
-        except Exception:
-            pass
+        if real:
+            info.update(job_usage(job))
         label = "ibm-qpu" if real else "ibm-fake-noisy-simulator"
         return counts, label, info
     except Exception as exc:
@@ -973,8 +1224,343 @@ def compact_embedding(ising, angles, seed, iters=3000):
                 depth=isa.depth(), two_qubit_gates=sum(i.operation.num_qubits == 2 for i in isa.data))
 
 
+# --------------------------------------------------------------------------- QAOA-only mode
+# One qubit per candidate route (plus slack qubits when slack = true). No classical selection,
+# connection or repair: the network IS the best measured bitstring. Classical code only builds the
+# QUBO, tunes its penalty weights and CHECKS the measured samples (budget, conflicts, connected).
+def route_subset_tables(nodes, paths, costs_int, conf_idx):
+    """Properties of every subset of routes. Index m: bit e = 1 <=> route e is built (2^R entries)."""
+    R = len(paths)
+    m = np.arange(2 ** R, dtype=np.int64)
+    bits = [((m >> e) & 1).astype(bool) for e in range(R)]
+    cost, value = np.zeros(2 ** R), np.zeros(2 ** R)
+    for e, p in enumerate(paths):
+        cost[bits[e]] += costs_int[e]
+        value[bits[e]] += p["value"]
+    n_conf = np.zeros(2 ** R, np.int32)
+    for i, j in conf_idx:
+        n_conf += bits[i] & bits[j]
+    incident = {v: [e for e, p in enumerate(paths) if v in (p["u"], p["v"])] for v in nodes}
+    covered = np.ones(2 ** R, bool)
+    cover_pen = np.zeros(2 ** R)               # sum over cities of 1 - d + d(d-1)/D  (0 when 1 <= d <= D)
+    for v, S in incident.items():
+        d = np.zeros(2 ** R, np.int16)
+        for e in S:
+            d += bits[e]
+        covered &= d > 0
+        if S:
+            cover_pen += 1 - d + d * (d - 1) / len(S)
+    return dict(R=R, cost=cost, value=value, n_conf=n_conf, covered=covered, cover_pen=cover_pen,
+                incident=incident)
+
+
+def connected_subsets(nodes, paths, subsets):
+    """For each route subset (int bitmask) say whether its routes connect ALL nodes.
+    Vectorised flood fill from the first node: reach is a bitmask of the nodes reached so far."""
+    names = list(nodes)
+    if len(names) > 62:
+        raise InputError("qaoa_only supports at most 62 cities")
+    pos = {k: i for i, k in enumerate(names)}
+    U = [pos[p["u"]] for p in paths]; V = [pos[p["v"]] for p in paths]
+    subsets = np.asarray(subsets, dtype=np.int64)
+    reach = np.ones(len(subsets), dtype=np.int64)
+    while True:
+        new = reach.copy()
+        for e, (u, v) in enumerate(zip(U, V)):
+            has = ((subsets >> e) & 1).astype(bool)
+            touch = (((reach >> u) | (reach >> v)) & 1).astype(bool)
+            new[has & touch] |= (1 << u) | (1 << v)
+        if np.array_equal(new, reach):
+            break
+        reach = new
+    return reach == (1 << len(names)) - 1
+
+
+def budget_penalty(cost, B, slack, pen):
+    """Budget term of the energy of a route subset (for slack: already minimised over the slack bits)."""
+    if slack:          # min over s of lam*(C + S - B)^2 with S in 0..B  ->  lam*max(0, C - B)^2
+        return pen["lam"] * np.maximum(0.0, cost - B) ** 2
+    h = B - cost       # unbalanced penalization: -lam1*h + lam2*h^2
+    return -pen["lam1"] * h + pen["lam2"] * h ** 2
+
+
+def tune_penalties(tab, B, slack, cover, conn_ok, opt_value, build):
+    """Penalty weights for the QAOA-only QUBO, chosen by an exhaustive check over all 2^R route subsets.
+
+    A weight combination is admissible when every QUBO ground state is a valid route set (within
+    budget, no conflict pair and, with cover_cities, every city touched). Among admissible ones,
+    combinations whose ground state is the best CONNECTED network are preferred, and then the one
+    with the smallest Ising scale max(|h|, |J|): the circuit divides every angle by that scale, so
+    oversized penalties squeeze the value differences QAOA has to resolve.
+    build(pen) -> QUBO, used to compute that scale."""
+    valid = (tab["cost"] <= B + 1e-9) & (tab["n_conf"] == 0)
+    good = valid & tab["covered"] if cover else valid
+    vmax, vsum = float(tab["value"].max()), float(tab["value"].sum())
+    fine = tab["R"] <= 16                     # coarser grids above 16 routes keep this to a few seconds
+    ladder = [0.25, 0.5, 1, 2, 3, 5, 8, 13, 21, vsum + 1] if fine else [0.25, 1, 3, 8, 21, vsum + 1]
+    lam1s = [0, 0.25, 0.5, 1, 2, 3, 5, 8, 13, 21] if fine else [0, 0.5, 2, 5, 13]
+    lam2s = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5] if fine else [0.02, 0.1, 0.5, 2, 5]
+    budget_grid = ([dict(lam=float(l)) for l in ladder] if slack else
+                   [dict(lam1=float(a), lam2=float(b)) for a in lam1s for b in lam2s])
+    betas = ladder if cover else [0.0]
+    mus = sorted({vmax + 1, 2 * (vmax + 1), 4 * (vmax + 1), vsum + 1})
+    tested, admissible, best = 0, 0, None
+    for bp in budget_grid:
+        base = -tab["value"] + budget_penalty(tab["cost"], B, slack, bp)
+        for mu in mus:
+            with_conf = base + mu * tab["n_conf"]
+            for beta in betas:
+                E = with_conf + beta * tab["cover_pen"] if beta else with_conf
+                gs = np.flatnonzero(E <= E.min() + 1e-9)
+                tested += 1
+                if not good[gs].all():
+                    continue
+                admissible += 1
+                pen = dict(bp, mu=float(mu), beta=float(beta))
+                q = build(pen)
+                ising = qubo_to_ising(q)
+                scale = max(1.0, float(np.max(np.abs(ising["h"]))), float(np.max(np.abs(ising["J"]))))
+                optimal = bool(conn_ok[gs].all() and np.isclose(tab["value"][gs], opt_value).all())
+                key = (not optimal, scale)
+                if best is None or key < best[0]:
+                    best = (key, pen, optimal, gs, scale)
+                if not cover:        # larger beta changes nothing without cover_cities
+                    break
+    if best is None:     # cannot happen for slack (lam = beta = mu = sum(values) + 1 is always safe)
+        raise InputError("no penalty weights found whose QUBO minimum is a valid network; try slack = true")
+    _, pen, optimal, gs, scale = best
+    return pen, dict(tested_combinations=tested, admissible_combinations=admissible,
+                     ground_state_is_optimal_network=optimal, ising_scale=round(scale, 6),
+                     rule="all QUBO minima valid; prefer minimum = best connected network; then smallest Ising scale")
+
+
+def build_qubo_qaoa_only(values, costs_int, conf_idx, B, slack_w, incident, pen, slack, cover):
+    """QUBO over y = (x_0..x_{R-1}, s_0..s_{K-1}). Terms:
+       -sum v_e x_e                                                        value (to maximise)
+       slack : lam*(sum c_e x_e + sum w_k s_k - B)^2                       budget, exact "<="
+       no slack: -lam1*h + lam2*h^2,  h = B - sum c_e x_e                  budget, unbalanced
+       mu * sum_{(e,f) conflict} x_e x_f                                   never both of a pair
+       beta * sum_v (1 - sum_{e in S_v} x_e + (2/|S_v|) sum_{e<f in S_v} x_e x_f)
+            = beta*(1 - d + d(d-1)/|S_v|): 1 if city v has no route, 0 if it has 1 or all |S_v|
+              routes, slightly negative in between (cover_cities)."""
+    R, K = len(values), len(slack_w)
+    n = R + K
+    lin, quad, off = np.zeros(n), np.zeros((n, n)), 0.0
+    lin[:R] -= np.asarray(values, float)
+    c = np.asarray(costs_int, float)
+    if slack:
+        a = np.concatenate([c, np.asarray(slack_w, float)])
+        off += pen["lam"] * B ** 2
+        lin += pen["lam"] * (a ** 2 - 2 * B * a)
+        quad += np.triu(2 * pen["lam"] * np.outer(a, a), 1)
+    else:
+        off += -pen["lam1"] * B + pen["lam2"] * B ** 2
+        lin[:R] += pen["lam1"] * c - 2 * pen["lam2"] * B * c + pen["lam2"] * c ** 2
+        quad[:R, :R] += np.triu(2 * pen["lam2"] * np.outer(c, c), 1)
+    for i, j in conf_idx:
+        quad[i, j] += pen["mu"]
+    if cover and pen["beta"]:
+        for S in incident.values():
+            off += pen["beta"]
+            for e in S:
+                lin[e] -= pen["beta"]
+            for e, f in combinations(S, 2):
+                quad[e, f] += 2 * pen["beta"] / len(S)
+    return dict(offset=off, linear=lin, quadratic=quad)
+
+
+def qaoa_only_formulas(names, values, costs_int, slack_w, B, conf_idx, incident, pen, slack, cover, latex):
+    R = len(values)
+    sym = (lambda nm: _tex(nm)) if latex else (lambda nm: nm)
+    mul = "" if latex else "*"
+    xs, ss = [sym(nm) for nm in names[:R]], [sym(nm) for nm in names[R:]]
+    lp, rp_ = (r"\left(", r"\right)") if latex else ("(", ")")
+    cost_txt = _poly([(cc, x) for cc, x in zip(costs_int, xs)], latex)
+    parts = [f"-{lp}{_poly([(v, x) for v, x in zip(values, xs)], latex)}{rp_}"]
+    if slack:
+        parts.append(f"+ {_num(pen['lam'])}{lp}{_poly([(cc, x) for cc, x in zip(costs_int, xs)] + [(w, s) for w, s in zip(slack_w, ss)], latex)} - {B}{rp_}^2")
+    else:
+        h = f"{lp}{B} - {lp}{cost_txt}{rp_}{rp_}"
+        if pen["lam1"]:
+            parts.append(f"- {_num(pen['lam1'])}{mul}{h}")
+        parts.append(f"+ {_num(pen['lam2'])}{mul}{h}^2")
+    if conf_idx:
+        parts.append(f"+ {_num(pen['mu'])}{lp}" + " + ".join(f"{xs[i]}{mul}{xs[j]}" for i, j in conf_idx) + rp_)
+    if cover and pen["beta"]:
+        terms = []
+        for S in incident.values():
+            t = "1 - " + " - ".join(xs[e] for e in S)
+            pairs = list(combinations(S, 2))
+            if pairs:
+                t += f" + {_num(round(2 / len(S), 6))}{mul}{lp}" + " + ".join(f"{xs[e]}{mul}{xs[f]}" for e, f in pairs) + rp_
+            terms.append(f"{lp}{t}{rp_}")
+        parts.append(f"+ {_num(pen['beta'])}{lp}" + " + ".join(terms) + rp_)
+    return ((("E(x,s) = " if slack else "E(x) = ") if latex else "E = ") + " ".join(parts))
+
+
+def solve_qaoa_only(budget, nodes, paths, conflicts, opts, notes, result, t_start):
+    import time
+    R = len(paths)
+    if count_components(nodes, paths) > 1:
+        return result("infeasible", connected=False,
+                      reason="The candidate paths cannot connect all nodes (graph is disconnected).")
+    slack = bool(opts["slack"]); cover = bool(opts["cover_cities"])
+    costs_int, unit = to_integer_units([p["cost"] for p in paths] or [0.0])
+    B = int(math.floor(budget * unit + 1e-9))
+    slack_w = slack_weights(B) if slack else []
+    n = R + len(slack_w)
+    if n > int(opts["max_qubits"]):
+        fixes = (["slack = false (" + str(R) + " qubits)"] if slack and R <= int(opts["max_qubits"]) else []) + [
+            "fewer candidate routes", "a higher max_qubits (exact simulation of n qubits needs 2^n amplitudes: "
+            "22 qubits ~ 70 MB per state vector, 26 is the hard limit)", 'mode = "hybrid"']
+        raise InputError(
+            f"qaoa_only needs one qubit per route{' plus ' + str(len(slack_w)) + ' slack qubits' if slack else ''}: "
+            f"{n} qubits for {R} routes, but max_qubits = {opts['max_qubits']}. Options: " + "; ".join(fixes) + ".")
+    pos = {p["id"]: e for e, p in enumerate(paths)}
+    conf_idx = sorted(tuple(sorted((pos[a], pos[b]))) for a, b in map(tuple, conflicts) if a in pos and b in pos)
+    values = [p["value"] for p in paths]
+
+    # ---- exhaustive classical reference over all route subsets (checking only, never building)
+    t0 = time.perf_counter()
+    tab = route_subset_tables(nodes, paths, costs_int, conf_idx)
+    valid = (tab["cost"] <= B + 1e-9) & (tab["n_conf"] == 0)
+    cand = np.flatnonzero(valid & tab["covered"])
+    conn_ok = np.zeros(2 ** R, bool)
+    conn_ok[cand] = connected_subsets(nodes, paths, cand)
+    if not conn_ok.any():
+        return result("infeasible", connected=False,
+                      reason="No set of routes within the budget connects all nodes without a conflict "
+                             f"(checked all 2^{R} route combinations).")
+    good_vals = np.where(conn_ok, tab["value"], -np.inf)
+    opt_value = float(good_vals.max())
+    opt_subset = int(np.argmax(good_vals))
+    build = lambda pen: build_qubo_qaoa_only(values, costs_int, conf_idx, B, slack_w, tab["incident"], pen, slack, cover)
+    pen, search = tune_penalties(tab, B, slack, cover, conn_ok, opt_value, build)
+    if not search["ground_state_is_optimal_network"]:
+        notes.append("With these penalties the QUBO minimum is a valid network but not the best connected one "
+                     "(connectivity is not part of the QUBO); the samples are still checked for connectivity.")
+    qubo = build(pen)
+    E = qubo_energies_fast(qubo, n)
+    route_of = np.arange(2 ** n, dtype=np.int64) & ((1 << R) - 1)    # qubits 0..R-1 = routes (low bits)
+    E_sub = (-tab["value"] + budget_penalty(tab["cost"], B, slack, pen) + pen["mu"] * tab["n_conf"]
+             + pen["beta"] * tab["cover_pen"])
+    assert np.isclose(E.min(), E_sub.min()), "QUBO and route-level energies disagree"
+    ising = qubo_to_ising(qubo)
+    scale = max(1.0, float(np.max(np.abs(ising["h"]))), float(np.max(np.abs(ising["J"]))))
+    t_tune = time.perf_counter() - t0
+
+    # ---- QAOA
+    t1 = time.perf_counter()
+    angles, training = train_qaoa(E, n, scale, int(opts["qaoa_depth"]), int(opts["maxiter"]),
+                                  str(opts["warm_start"]), int(opts["seed"]))
+    probs = qaoa_probabilities(angles, E, n, scale)
+    t2 = time.perf_counter()
+    execution = None
+    if opts["execution"] == "simulator":
+        counts, sampler = sample_counts(ising, angles, probs, int(opts["shots"]), int(opts["seed"]))
+    else:
+        counts, sampler, execution = run_on_ibm(ising, angles, probs, opts)
+        if counts is None:
+            status = "pending" if execution.get("status") == "pending" else "error"
+            return result(status, connected=False, reason=f"IBM execution: {execution.get('error')}",
+                          quantum=dict(execution=execution))
+        if execution.get("fallback_used"):
+            notes.append("IBM execution failed or timed out; samples come from the local SIMULATOR "
+                         "(see quantum.execution.error).")
+    t3 = time.perf_counter()
+
+    # ---- read the answer from the samples: best valid AND connected bitstring
+    shots = sum(counts.values())
+    sub_counts = {}
+    for k, c in counts.items():
+        m = int(k) & ((1 << R) - 1)
+        sub_counts[m] = sub_counts.get(m, 0) + c
+    subs = np.array(list(sub_counts), dtype=np.int64)
+    s_valid = valid[subs]
+    s_conn = np.zeros(len(subs), bool)
+    s_conn[s_valid] = connected_subsets(nodes, paths, subs[s_valid])
+    pick = lambda mask: max((int(m) for m in subs[mask]), key=lambda m: (tab["value"][m], sub_counts[m]))
+    if s_conn.any():
+        status, chosen = "ok", pick(s_conn)
+    elif s_valid.any():
+        status, chosen = "disconnected", pick(s_valid)
+        notes.append("No measured sample connects all cities; returning the best valid (within budget, "
+                     "conflict-free) sample. Try more shots, a larger p or more iterations.")
+    else:
+        status, chosen = "no_valid_sample", None
+        notes.append("No measured sample is within budget and conflict-free. Try more shots, a larger p "
+                     "or more iterations.")
+    ids = [paths[e]["id"] for e in range(R) if chosen is not None and chosen >> e & 1]
+    by_id = {p["id"]: p for p in paths}
+
+    p_routes = probs.reshape(-1, 2 ** R).sum(axis=0)          # marginal over the slack qubits
+    names = [f"x{i}" for i in range(R)] + [f"s{k}" for k in range(len(slack_w))]
+    order = sorted(sub_counts, key=lambda m: -sub_counts[m])[:8]
+    conn_of = dict(zip((int(m) for m in subs), s_conn))
+    top = [dict(routes=[paths[e]["id"] for e in range(R) if m >> e & 1], count=sub_counts[m],
+                value=float(tab["value"][m]), cost=float(tab["cost"][m]) / unit, valid=bool(valid[m]),
+                connected=bool(conn_of.get(m, False))) for m in order]
+    best_val = float(tab["value"][chosen]) if chosen is not None else None
+    penalties = dict(budget_encoding="slack bits" if slack else "unbalanced penalization (no slack)",
+                     **{k: v for k, v in pen.items() if k != "beta" or cover},
+                     slack_weights=list(slack_w), budget_units=B, cost_unit_scale=unit,
+                     cover_cities={v: [names[e] for e in S] for v, S in tab["incident"].items()} if cover else False,
+                     search=search)
+    formula = qaoa_only_formulas(names, values, costs_int, slack_w, B, conf_idx, tab["incident"], pen, slack, cover, False)
+    formula_tex = qaoa_only_formulas(names, values, costs_int, slack_w, B, conf_idx, tab["incident"], pen, slack, cover, True)
+    stats = dict(
+        mode="qaoa_only", sampler=sampler, qubits=n, route_qubits=R, slack_qubits=len(slack_w),
+        probabilities_source="p_* = exact noiseless state with the trained angles; *_sample_rate = the measured shots",
+        layers=int(opts["qaoa_depth"]), shots=shots, cobyla_maxiter=int(opts["maxiter"]),
+        expected_energy=float(probs @ E),
+        p_valid_uniform=float(valid.mean()),
+        p_valid_qaoa=float(p_routes[valid].sum()),
+        p_connected_qaoa=float(p_routes[conn_ok].sum()),
+        p_optimum_qaoa=float(p_routes[conn_ok & np.isclose(tab["value"], opt_value)].sum()),
+        valid_sample_rate=round(sum(sub_counts[int(m)] for m in subs[s_valid]) / shots, 6),
+        connected_sample_rate=round(sum(sub_counts[int(m)] for m in subs[s_conn]) / shots, 6),
+        best_sampled_value=best_val,
+        exact_optimum_value=opt_value,
+        approximation_ratio=round(best_val / opt_value, 6) if best_val is not None and opt_value else None,
+        optimum_found=bool(best_val is not None and status == "ok" and np.isclose(best_val, opt_value)),
+        reference_optimum=dict(routes=[paths[e]["id"] for e in range(R) if opt_subset >> e & 1],
+                               value=opt_value, cost=float(tab["cost"][opt_subset]) / unit,
+                               note="exhaustive check over all route subsets, for comparison only"),
+        top_samples=top,
+        variables={**{f"x{i}": p["id"] for i, p in enumerate(paths)},
+                   **{f"s{k}": f"slack {w}" for k, w in enumerate(slack_w)}},
+        timing=dict(penalty_tuning_seconds=round(t_tune, 3), training_seconds=round(t2 - t1, 3),
+                    sampling_seconds=round(t3 - t2, 3)),
+    )
+    if execution is not None:
+        stats["execution"] = execution
+    stats["penalties"] = penalties
+    stats.update(quantum_blocks(names, qubo, ising, scale, E, angles, training, opts, formula, formula_tex))
+    if opts.get("embedding"):
+        stats["embedding"] = compact_embedding(ising, angles, int(opts["seed"]))
+
+    spent = sum(by_id[i]["cost"] for i in ids)
+    edges = [dict(id=i, **{"from": by_id[i]["u"], "to": by_id[i]["v"]}, cost=by_id[i]["cost"],
+                  value=by_id[i]["value"], stage="quantum") for i in ids]
+    connected = bool(ids) and count_components(nodes, [by_id[i] for i in ids]) == 1
+    assert status != "ok" or (connected and spent <= budget + 1e-9)
+    assert not any(frozenset((a, b)) in conflicts for a, b in combinations(ids, 2))
+    extra = {} if status == "ok" else dict(reason=notes[-1])
+    return result(
+        status, connected=connected, **extra,
+        total_cost=round(spent, 9), total_value=float(sum(by_id[i]["value"] for i in ids)),
+        remaining_budget=round(budget - spent, 9),
+        cost_breakdown=dict(quantum=round(spent, 9), connectors=0, extra=0),
+        runtime_seconds=round(time.perf_counter() - t_start, 3),
+        graph=dict(nodes=[dict(name=k, lon=x, lat=y) for k, (x, y) in nodes.items()], edges=edges),
+        quantum=stats,
+    )
+
+
 # --------------------------------------------------------------------------- main solver
 def solve(data: dict) -> dict:
+    import time
+    t_start = time.perf_counter()
     budget, nodes, paths, conflicts, opts = parse_input(data)
     by_id = {p["id"]: p for p in paths}
     notes = []
@@ -992,6 +1578,10 @@ def solve(data: dict) -> dict:
         big = {k: kw.pop(k) for k in ("graph", "quantum") if k in kw}      # long sections go last
         return dict(status=status, **kw, budget=budget, notes=notes, conflicts=conflicts_out, **big)
 
+    if opts["mode"] == "qaoa_only":
+        return solve_qaoa_only(budget, nodes, paths, conflicts, opts, notes, result, t_start)
+
+    # ---- hybrid mode
     # 1. Can all nodes be connected at all?
     if count_components(nodes, paths) > 1:
         return result("infeasible", connected=False,
@@ -1056,6 +1646,7 @@ def solve(data: dict) -> dict:
         cost_breakdown=dict(quantum=sum(by_id[i]["cost"] for i in q_ids),
                             connectors=sum(by_id[i]["cost"] for i in conn_ids),
                             extra=sum(by_id[i]["cost"] for i in extra_ids)),
+        runtime_seconds=round(time.perf_counter() - t_start, 3),
         graph=dict(nodes=[dict(name=k, lon=x, lat=y) for k, (x, y) in nodes.items()], edges=edges),
         quantum=q_stats,
     )
@@ -1095,6 +1686,17 @@ def main(argv=None):
     ap.add_argument("--env-file", help="file with IBM_QUANTUM_TOKEN / IBM_QUANTUM_INSTANCE "
                                        "(default: .env in the current folder or next to this script)")
     ap.add_argument("-v", "--verbose", action="store_true")
+    q = ap.add_argument_group("QAOA settings (override the options in the input JSON)")
+    q.add_argument("--p", "--layers", dest="p", type=int, help="number of QAOA layers p")
+    q.add_argument("--slack", dest="slack", action="store_true", default=None,
+                   help="budget with slack qubits (exact <=)")
+    q.add_argument("--no-slack", dest="slack", action="store_false",
+                   help="budget without slack qubits (unbalanced penalization, fewer qubits)")
+    q.add_argument("--shots", type=int, help="number of measurements of the final circuit")
+    q.add_argument("--iterations", "--maxiter", dest="iterations", type=int,
+                   help="COBYLA iterations per optimiser run")
+    q.add_argument("--mode", choices=sorted(MODES), help="qaoa_only (default) or hybrid")
+    q.add_argument("--max-qubits", dest="max_qubits", type=int, help="refuse problems needing more qubits")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(message)s")
     log.setLevel(logging.INFO if args.verbose else logging.WARNING)   # only our own progress lines
@@ -1103,8 +1705,19 @@ def main(argv=None):
         if env_file:
             log.info("loaded settings from %s", env_file)
         data = json.load(open(args.input, encoding="utf-8")) if args.input else json.load(sys.stdin)
+        if not isinstance(data, dict):
+            raise InputError("Input must be a JSON object")
+        cli = dict(qaoa_depth=args.p, slack=args.slack, shots=args.shots, maxiter=args.iterations, mode=args.mode,
+                   max_qubits=args.max_qubits)
+        cli = {k: v for k, v in cli.items() if v is not None}
+        if cli:
+            data["options"] = dict(data.get("options") or {})
+            for alias, key in OPTION_ALIASES.items():          # the command line wins over JSON aliases
+                if key in cli:
+                    data["options"].pop(alias, None)
+            data["options"].update(cli)
         out = solve(data)
-        code = {"ok": 0, "infeasible": 2, "pending": 3}.get(out["status"], 1)
+        code = {"ok": 0, "infeasible": 2, "pending": 3, "disconnected": 4, "no_valid_sample": 4}.get(out["status"], 1)
     except (InputError, json.JSONDecodeError) as exc:
         out, code = dict(status="error", error=str(exc)), 1
     except Exception as exc:   # report, never crash silently inside the pod
