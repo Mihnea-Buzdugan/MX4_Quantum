@@ -488,3 +488,78 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .algorithm-route .route-construction-cost small, .algorithm-route .route-value small { font-size: 5px; }
   .algorithm-route-status { font-size: 5px; }
 }
+
+/* Append to your existing stylesheet. Colours inherit from the surrounding panel. */
+.qaoa-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.qaoa-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.qaoa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.qaoa-field > span,
+.qaoa-field > legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.qaoa-field select,
+.qaoa-field input[type='number'] {
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  opacity: 0.9;
+}
+
+.qaoa-field select:focus-visible,
+.qaoa-field input:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.qaoa-field small {
+  opacity: 0.7;
+}
+
+.qaoa-choice {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.qaoa-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.qaoa-field input[aria-invalid='true'] {
+  border-color: #d64545;
+}
+
+.qaoa-field .qaoa-field-error {
+  color: #d64545;
+  opacity: 1;
+}
