@@ -1,18 +1,62 @@
+import { routes } from '../data/routes'
 import type { RailCity, RailRoute } from '../data/routes'
 import { authFetch } from '../utils/auth'
+
+export type RailwayPlanOptions = {
+  quantum_fraction: number
+  qaoa_depth: number
+  max_qubits: number
+  seed: number
+  auto_conflicts: boolean
+  coordinate_system: string
+  min_clearance: number
+  include_circuit: boolean
+  circuit_formats: string[]
+  execution: string
+  ibm_backend: string
+  ibm_shots: number
+  ibm_layout: string
+  ibm_optimization_level: number
+  ibm_dynamical_decoupling: boolean
+  ibm_twirling: boolean
+  ibm_timeout: number
+  ibm_job_id: string
+  ibm_fallback: boolean
+}
+
+export const DEFAULT_PLANNER_OPTIONS: RailwayPlanOptions = {
+  quantum_fraction: 0.8,
+  qaoa_depth: 1,
+  max_qubits: 12,
+  seed: 2026,
+  auto_conflicts: true,
+  coordinate_system: 'lonlat',
+  min_clearance: 15,
+  include_circuit: true,
+  circuit_formats: ['qasm3'],
+  execution: 'simulator',
+  ibm_backend: '',
+  ibm_shots: 4096,
+  ibm_layout: 'best',
+  ibm_optimization_level: 3,
+  ibm_dynamical_decoupling: true,
+  ibm_twirling: false,
+  ibm_timeout: 3600,
+  ibm_job_id: '',
+  ibm_fallback: false,
+}
 
 export type RailwayPlanRequest = {
   budget: number
   nodes: Record<string, [number, number]>
   paths: Array<{
-    id: string
+    id: number
     from: string
     to: string
     cost: number
     value: number
   }>
-  conflict_pairs: Array<[string, string]>
-  options: Record<string, never>
+  options: RailwayPlanOptions
   // Label stored with the saved plan; Django removes it before calling FastAPI.
   algorithm?: string
 }
@@ -79,11 +123,45 @@ function getPlannerUrl() {
   return import.meta.env.VITE_RAILWAY_PLANNER_URL || 'http://localhost:8000/api/railway/plan'
 }
 
+// The planner wants numeric path ids (0, 1, 2, ...). The app's routes use
+// string ids (e.g. "cluj-brasov"), so the planner id is the route's position
+// in the full `routes` list, and it is stable no matter which routes are sent.
+function toPlannerId(route: RailRoute): number {
+  const index = routes.findIndex((candidate) => candidate.id === route.id)
+  if (index === -1) {
+    throw new RailwayPlannerError(`Unknown route "${route.id}".`, 0)
+  }
+  return index
+}
+
+// Reverse of toPlannerId: planner id -> the app's route id.
+// Anything that is not a valid index is returned unchanged.
+function toRouteId(plannerId: string | number): string | number {
+  const index = Number(plannerId)
+  return Number.isInteger(index) && routes[index] ? routes[index].id : plannerId
+}
+
+// The rest of the UI matches routes by their string id, so translate every
+// id in the response back to it.
+function withRouteIds(response: RailwayPlanResponse): RailwayPlanResponse {
+  return {
+    ...response,
+    conflict_pairs: (response.conflict_pairs ?? []).map((pair) => pair.map(toRouteId)),
+    graph: response.graph
+      ? {
+        ...response.graph,
+        edges: response.graph.edges.map((edge) => ({ ...edge, id: toRouteId(edge.id) })),
+      }
+      : response.graph,
+  }
+}
+
 export function createRailwayPlanRequest(
   budget: number,
   selectedCities: RailCity[],
   selectedRoutes: RailRoute[],
   algorithm?: string,
+  options: Partial<RailwayPlanOptions> = {},
 ): RailwayPlanRequest {
   return {
     budget,
@@ -91,14 +169,13 @@ export function createRailwayPlanRequest(
       selectedCities.map((city) => [city.name, [city.lon, city.lat]]),
     ),
     paths: selectedRoutes.map((route) => ({
-      id: route.id,
+      id: toPlannerId(route),
       from: route.from,
       to: route.to,
       cost: route.constructionCost,
       value: route.value,
     })),
-    conflict_pairs: [],
-    options: {},
+    options: { ...DEFAULT_PLANNER_OPTIONS, ...options },
     algorithm,
   }
 }
@@ -140,7 +217,7 @@ export async function planRailwayNetwork(payload: RailwayPlanRequest): Promise<R
     && 'status' in body
     && body.status === 'infeasible'
   ) {
-    return body as RailwayPlanResponse
+    return withRouteIds(body as RailwayPlanResponse)
   }
 
   if (!response.ok) {
@@ -169,5 +246,5 @@ export async function planRailwayNetwork(payload: RailwayPlanRequest): Promise<R
     throw new RailwayPlannerError('The railway planner returned an invalid success response.', response.status)
   }
 
-  return body as RailwayPlanResponse
+  return withRouteIds(body as RailwayPlanResponse)
 }
