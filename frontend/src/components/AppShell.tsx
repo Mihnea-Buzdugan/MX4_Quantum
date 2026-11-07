@@ -138,7 +138,7 @@ export default function AppShell() {
 export type SimulationSpeed = 'realtime' | 'slow'
 export type RunMetrics = {
   executionMs: number
-  simulatedMs: number
+  simulatedMs: number | null
 }
 export type RunHistoryRecord = {
   timestamp: number
@@ -158,7 +158,7 @@ export type WorkspaceContext = {
   clearRunHistory: () => void
 }
 
-function formatDuration(durationMs: number | undefined) {
-  if (durationMs === undefined) return '—'
+function formatDuration(durationMs: number | null | undefined) {
+  if (durationMs === undefined || durationMs === null) return '—'
   return durationMs < 1000 ? `${durationMs.toFixed(1)} ms` : `${(durationMs / 1000).toFixed(1)} s`
 }

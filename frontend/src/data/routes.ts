@@ -3,6 +3,8 @@ export type RailCity = {
   shortName: string
   x: number
   y: number
+  lon: number
+  lat: number
 }
 
 export type RailRoute = {
@@ -22,14 +24,14 @@ export type DestinationGoal = {
 export const startingBudget = 7
 
 export const cities: RailCity[] = [
-  { name: 'Iași', shortName: 'IAS', x: 587, y: 140 },
-  { name: 'București', shortName: 'BUC', x: 482, y: 345 },
-  { name: 'Cluj-Napoca', shortName: 'CLJ', x: 308, y: 169 },
-  { name: 'Timișoara', shortName: 'TIM', x: 139, y: 245 },
-  { name: 'Brașov', shortName: 'BRA', x: 446, y: 253 },
-  { name: 'Sibiu', shortName: 'SIB', x: 343, y: 242 },
-  { name: 'Craiova', shortName: 'CRA', x: 320, y: 352 },
-  { name: 'Constanța', shortName: 'CST', x: 659, y: 365 },
+  { name: 'Iași', shortName: 'IAS', x: 587, y: 140, lon: 27.6, lat: 47.16667 },
+  { name: 'București', shortName: 'BUC', x: 482, y: 345, lon: 26.10626, lat: 44.43225 },
+  { name: 'Cluj-Napoca', shortName: 'CLJ', x: 308, y: 169, lon: 23.6, lat: 46.76667 },
+  { name: 'Timișoara', shortName: 'TIM', x: 139, y: 245, lon: 21.22571, lat: 45.75372 },
+  { name: 'Brașov', shortName: 'BRA', x: 446, y: 253, lon: 25.60613, lat: 45.64861 },
+  { name: 'Sibiu', shortName: 'SIB', x: 343, y: 242, lon: 24.15, lat: 45.8 },
+  { name: 'Craiova', shortName: 'CRA', x: 320, y: 352, lon: 23.8, lat: 44.31667 },
+  { name: 'Constanța', shortName: 'CST', x: 659, y: 365, lon: 28.63432, lat: 44.18073 },
 ]
 
 export const destinationGoals: DestinationGoal[] = [
