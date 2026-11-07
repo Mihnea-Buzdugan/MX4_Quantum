@@ -13,8 +13,11 @@ import {
   RotateCw,
   Route,
   Target,
+  Timer,
 } from 'lucide-react'
+import { useOutletContext } from 'react-router-dom'
 import NetworkDiagram from '../components/NetworkDiagram'
+import type { RunHistoryRecord, RunMetrics, SimulationSpeed, WorkspaceContext } from '../components/AppShell'
 import {
   bestPlanWithinBudget,
   cities,
@@ -25,9 +28,10 @@ import {
   type RailRoute,
 } from '../data/routes'
 
-type Algorithm = 'quantum' | 'classic'
+type Algorithm = 'quantum-simulated' | 'quantum-hardware' | 'classic'
 type RunStatus = 'running' | 'complete'
 type EvaluationState = {
+  speed: SimulationSpeed
   selectedRouteIds: string[]
   evaluatedRouteIds: string[]
   currentRouteId: string | null
@@ -39,6 +43,7 @@ type Props = {
 }
 
 const initialState: EvaluationState = {
+  speed: 'realtime',
   selectedRouteIds: [],
   evaluatedRouteIds: [],
   currentRouteId: null,
@@ -59,8 +64,16 @@ function getQuantumCandidateOrder(availableRoutes: RailRoute[]) {
 export default function DashboardPage({ algorithm }: Props) {
   const [runKey, setRunKey] = useState(0)
   const [evaluation, setEvaluation] = useState<EvaluationState>(initialState)
-  const isQuantum = algorithm === 'quantum'
-  const algorithmName = isQuantum ? 'Quantum Algorithm' : 'Classic Algorithm'
+  const { simulationSpeed, setRunMetrics, appendRunHistory } = useOutletContext<WorkspaceContext>()
+  const [executionTime, setExecutionTime] = useState<{ speed: SimulationSpeed; milliseconds: number } | null>(null)
+  const currentEvaluation = evaluation.speed === simulationSpeed ? evaluation : initialState
+  const displayedExecutionTime = executionTime?.speed === simulationSpeed ? executionTime.milliseconds : null
+  const isQuantum = algorithm !== 'classic'
+  const algorithmName = algorithm === 'classic'
+    ? 'Classic Algorithm'
+    : algorithm === 'quantum-simulated'
+      ? 'Quantum Algorithm (Simulated)'
+      : 'Quantum Algorithm (Real Hardware)'
   const evaluationOrder = useMemo(
     () => isQuantum ? getQuantumCandidateOrder(routes) : routes,
     [isQuantum],
@@ -68,17 +81,21 @@ export default function DashboardPage({ algorithm }: Props) {
 
   useEffect(() => {
     let step = 0
+    let executionMs = 0
+    let timeout: number | undefined
+    let cancelled = false
+    const startedAt = performance.now()
     const evaluatedIds = new Set<string>()
     const selectedIds = new Set<string>()
+    const setupStartedAt = performance.now()
     const exactPlanIds = new Set(bestPlanWithinBudget(routes, startingBudget).map((route) => route.id))
+    executionMs += performance.now() - setupStartedAt
 
-    const timer = window.setInterval(() => {
+    function evaluateRoute() {
       const currentRoute = evaluationOrder[step]
-      if (!currentRoute) {
-        window.clearInterval(timer)
-        return
-      }
+      if (!currentRoute) return null
 
+      const calculationStartedAt = performance.now()
       step += 1
       evaluatedIds.add(currentRoute.id)
       if (isQuantum) {
@@ -96,24 +113,84 @@ export default function DashboardPage({ algorithm }: Props) {
         selectedIds.clear()
         bestPlanForEvaluatedRoutes.forEach((route) => selectedIds.add(route.id))
       }
+      executionMs += performance.now() - calculationStartedAt
 
       const isComplete = step === evaluationOrder.length
-      setEvaluation({
+      const nextEvaluation = {
+        speed: simulationSpeed,
         selectedRouteIds: isComplete && !isQuantum ? [...exactPlanIds] : [...selectedIds],
         evaluatedRouteIds: [...evaluatedIds],
         currentRouteId: isComplete ? null : evaluationOrder[step].id,
         status: isComplete ? 'complete' : 'running',
-      })
+      } satisfies EvaluationState
 
-      if (isComplete) window.clearInterval(timer)
-    }, 240)
+      return { isComplete, nextEvaluation }
+    }
 
-    return () => window.clearInterval(timer)
-  }, [algorithm, evaluationOrder, isQuantum, runKey])
+    function evaluateNextStep() {
+      if (cancelled) return
+      const result = evaluateRoute()
+      if (!result) return
+      setEvaluation(result.nextEvaluation)
+      if (result.isComplete) {
+        const simulatedMs = performance.now() - startedAt
+        setExecutionTime({ speed: simulationSpeed, milliseconds: executionMs })
+        const metrics: RunMetrics = { executionMs, simulatedMs }
+        setRunMetrics(metrics)
+        appendRunHistory(createRunRecord(result.nextEvaluation.selectedRouteIds, simulatedMs))
+        return
+      }
+      timeout = window.setTimeout(evaluateNextStep, 480)
+    }
+
+    function createRunRecord(selectedRouteIds: string[], executionTimeMs: number): RunHistoryRecord {
+      const selectedRoutes = routes.filter((route) => selectedRouteIds.includes(route.id))
+      const totalCost = selectedRoutes.reduce((sum, route) => sum + route.constructionCost, 0)
+      return {
+        timestamp: Date.now(),
+        algorithm: algorithmName,
+        speed: simulationSpeed,
+        executionMs: executionTimeMs,
+        planStatus: totalCost <= startingBudget ? 'valid' : 'invalid',
+        totalCost,
+        totalReward: selectedRoutes.reduce((sum, route) => sum + route.value, 0),
+        selectedRoutes: selectedRoutes.map((route) => `${route.from} → ${route.to}`),
+      }
+    }
+
+    timeout = window.setTimeout(() => {
+      timeout = undefined
+      if (cancelled) return
+      if (simulationSpeed === 'realtime') {
+        while (step < evaluationOrder.length) {
+          if (!evaluateRoute()) break
+        }
+        const simulatedMs = performance.now() - startedAt
+        setEvaluation({
+          speed: simulationSpeed,
+          selectedRouteIds: !isQuantum ? [...exactPlanIds] : [...selectedIds],
+          evaluatedRouteIds: [...evaluatedIds],
+          currentRouteId: null,
+          status: 'complete',
+        })
+        setExecutionTime({ speed: simulationSpeed, milliseconds: executionMs })
+        const metrics: RunMetrics = { executionMs, simulatedMs }
+        setRunMetrics(metrics)
+        appendRunHistory(createRunRecord(!isQuantum ? [...exactPlanIds] : [...selectedIds], simulatedMs))
+      } else {
+        evaluateNextStep()
+      }
+    }, 0)
+
+    return () => {
+      cancelled = true
+      if (timeout !== undefined) window.clearTimeout(timeout)
+    }
+  }, [algorithm, algorithmName, appendRunHistory, evaluationOrder, isQuantum, runKey, setRunMetrics, simulationSpeed])
 
   const selectedRoutes = useMemo(
-    () => routes.filter((route) => evaluation.selectedRouteIds.includes(route.id)),
-    [evaluation.selectedRouteIds],
+    () => routes.filter((route) => currentEvaluation.selectedRouteIds.includes(route.id)),
+    [currentEvaluation.selectedRouteIds],
   )
   const totalCost = selectedRoutes.reduce((sum, route) => sum + route.constructionCost, 0)
   const totalScore = selectedRoutes.reduce((sum, route) => sum + route.value, 0)
@@ -121,9 +198,9 @@ export default function DashboardPage({ algorithm }: Props) {
   const remainingBudget = startingBudget - totalCost
 
   function getRouteStatus(route: RailRoute) {
-    if (evaluation.selectedRouteIds.includes(route.id)) return 'Selected'
-    if (evaluation.status === 'running' && evaluation.currentRouteId === route.id) return 'Evaluating'
-    if (evaluation.evaluatedRouteIds.includes(route.id)) return 'Skipped'
+    if (currentEvaluation.selectedRouteIds.includes(route.id)) return 'Selected'
+    if (currentEvaluation.status === 'running' && currentEvaluation.currentRouteId === route.id) return 'Evaluating'
+    if (currentEvaluation.evaluatedRouteIds.includes(route.id)) return 'Skipped'
     return 'Queued'
   }
 
@@ -135,7 +212,9 @@ export default function DashboardPage({ algorithm }: Props) {
           <h1>{algorithmName}</h1>
           <p>
             {isQuantum
-              ? 'Watch a quantum-inspired candidate heuristic build a high-value plan within the construction budget.'
+              ? algorithm === 'quantum-simulated'
+                ? 'Watch a quantum-inspired candidate heuristic build a high-value plan in the simulator workspace.'
+                : 'View the quantum algorithm workspace configured for real hardware execution.'
               : 'Watch an exact search compare route combinations and reveal the highest-value plan within budget.'}
           </p>
         </div>
@@ -144,7 +223,10 @@ export default function DashboardPage({ algorithm }: Props) {
             type="button"
             className="button button-secondary"
             onClick={() => {
+              setRunMetrics(null)
+              setExecutionTime(null)
               setEvaluation({
+                speed: simulationSpeed,
                 selectedRouteIds: [],
                 evaluatedRouteIds: [],
                 currentRouteId: evaluationOrder[0]?.id ?? null,
@@ -163,6 +245,11 @@ export default function DashboardPage({ algorithm }: Props) {
           <div className="score-card-label"><span className="panel-icon"><Construction size={15} /></span><span>Starting budget</span></div>
           <strong>{startingBudget}</strong>
           <small>Construction budget units</small>
+        </article>
+        <article className="panel score-card">
+          <div className="score-card-label"><span className="panel-icon"><Timer size={15} /></span><span>Time Taken</span></div>
+          <strong>{displayedExecutionTime === null ? '—' : displayedExecutionTime < 1000 ? `${displayedExecutionTime.toFixed(1)} ms` : `${(displayedExecutionTime / 1000).toFixed(1)} s`}</strong>
+          <small>Algorithm processing time</small>
         </article>
         <article className="panel score-card">
           <div className="score-card-label"><span className="panel-icon"><Route size={15} /></span><span>Total construction cost</span></div>
@@ -197,8 +284,8 @@ export default function DashboardPage({ algorithm }: Props) {
             </div>
           </div>
           <NetworkDiagram
-            builtRouteIds={evaluation.selectedRouteIds}
-            evaluatingRouteIds={evaluation.currentRouteId ? [evaluation.currentRouteId] : []}
+            builtRouteIds={currentEvaluation.selectedRouteIds}
+            evaluatingRouteIds={currentEvaluation.currentRouteId ? [currentEvaluation.currentRouteId] : []}
           />
           <div className="network-panel-footer">
             <span><b>{cities.length.toString().padStart(2, '0')}</b> cities</span><i />
@@ -216,8 +303,8 @@ export default function DashboardPage({ algorithm }: Props) {
               </div>
               <p>{isQuantum ? 'Budget-aware candidate ranking' : 'Exact search across route combinations'}</p>
             </div>
-            <span className={`algorithm-run-state ${evaluation.status}`} role="status">
-              {evaluation.status === 'running' ? <><LoaderCircle size={11} /> Evaluating</> : <><CircleCheck size={11} /> Complete</>}
+            <span className={`algorithm-run-state ${currentEvaluation.status}`} role="status">
+              {currentEvaluation.status === 'running' ? <><LoaderCircle size={11} /> Evaluating</> : <><CircleCheck size={11} /> Complete</>}
             </span>
           </div>
           <div className="route-list algorithm-route-list" aria-live="polite">
@@ -237,7 +324,7 @@ export default function DashboardPage({ algorithm }: Props) {
             })}
           </div>
           <div className="route-list-footer algorithm-list-footer">
-            <span>{evaluation.evaluatedRouteIds.length} / {routes.length} routes evaluated</span>
+            <span>{currentEvaluation.evaluatedRouteIds.length} / {routes.length} routes evaluated</span>
             <span>{selectedRoutes.length} selected by algorithm</span>
           </div>
         </section>
@@ -272,7 +359,7 @@ export default function DashboardPage({ algorithm }: Props) {
         <div className="model-demo-note"><ArrowUpRight size={14} /><span>The lowest model energy belongs to an over-budget plan. This illustrates how a weak budget penalty can favor a higher-scoring but invalid plan.</span></div>
       </section>
 
-      <div className="demo-disclaimer"><span className="disclaimer-dot" /> Algorithm workspaces use the supplied static route data; quantum selection is a heuristic simulation, not live quantum hardware.</div>
+      <div className="demo-disclaimer"><span className="disclaimer-dot" /> Workspaces use supplied static route data. The real-hardware workspace is a UI mode only and does not connect to quantum hardware.</div>
     </div>
   )
 }
