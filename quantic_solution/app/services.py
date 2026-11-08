@@ -268,8 +268,8 @@ async def plan_network(
 
     payload = build_payload(req)
     opts = req.options
-    log.info("planning: algorithm=%r execution=%s p=%d slack=%s iterations=%d shots=%d",
-             req.algorithm, opts.execution, opts.qaoa_depth, opts.slack, opts.maxiter, opts.shots)
+    log.info("planning: algorithm=%r mode=%s execution=%s p=%d slack=%s iterations=%d shots=%d",
+             req.algorithm, opts.mode, opts.execution, opts.qaoa_depth, opts.slack, opts.maxiter, opts.shots)
 
     # Execute the CPU-bound solver in a separate process.
     result = await _run_in_pool(solve, payload)

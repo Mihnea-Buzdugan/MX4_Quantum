@@ -26,8 +26,11 @@ import {
   DEFAULT_PLANNER_OPTIONS,
   DEFAULT_QAOA_SETTINGS,
   planRailwayNetwork,
+  describeEncoding,
   QAOA_LIMITS,
+  QUANTUM_FRACTION_LIMITS,
   qaoaSettingsToOptions,
+  type PlannerMode,
 } from '../services/railwayPlanner'
 import {
   computeStatistics,
@@ -39,12 +42,12 @@ import {
 } from '../utils/batchStats'
 import { createBatch, finishBatch } from '../services/history'
 import { isLoggedIn } from '../utils/auth'
-import { estimateQubits } from '../utils/qubits'
+import { estimateHybridQubits, estimateQubits } from '../utils/qubits'
 
 type Execution = 'simulated' | 'hardware'
 
 // Raw text of one row of the simulations table (validated before the batch runs).
-type ParamRow = { p: string; slack: boolean; iterations: string; shots: string; seed: string }
+type ParamRow = { p: string; slack: boolean; mode: PlannerMode; quantumPercent: string; iterations: string; shots: string; seed: string }
 
 const MAX_SIMULATIONS = 100
 const MAX_QUBITS = DEFAULT_PLANNER_OPTIONS.max_qubits
@@ -59,6 +62,8 @@ function defaultRow(seed: number): ParamRow {
   return {
     p: String(DEFAULT_QAOA_SETTINGS.p),
     slack: DEFAULT_QAOA_SETTINGS.slack,
+    mode: DEFAULT_QAOA_SETTINGS.mode,
+    quantumPercent: String(Math.round(DEFAULT_QAOA_SETTINGS.quantumFraction * 100)),
     iterations: String(DEFAULT_QAOA_SETTINGS.iterations),
     shots: String(DEFAULT_QAOA_SETTINGS.shots),
     seed: String(seed),
@@ -77,9 +82,12 @@ function parseRow(row: ParamRow): BatchRunParams | null {
   const iterations = wholeNumber(row.iterations, QAOA_LIMITS.iterations.min, QAOA_LIMITS.iterations.max)
   const shots = wholeNumber(row.shots, QAOA_LIMITS.shots.min, QAOA_LIMITS.shots.max)
   const seed = wholeNumber(row.seed, 0, 2 ** 31 - 1)
-  return p === null || iterations === null || shots === null || seed === null
+  const percent = row.mode === 'hybrid'
+    ? wholeNumber(row.quantumPercent, QUANTUM_FRACTION_LIMITS.min, QUANTUM_FRACTION_LIMITS.max)
+    : DEFAULT_QAOA_SETTINGS.quantumFraction * 100
+  return p === null || iterations === null || shots === null || seed === null || percent === null
     ? null
-    : { p, slack: row.slack, iterations, shots, seed }
+    : { p, slack: row.slack, mode: row.mode, quantumFraction: percent / 100, iterations, shots, seed }
 }
 
 function formatSeconds(ms: number | null) {
@@ -123,7 +131,10 @@ export default function BatchSimulationPage() {
     const q = estimateQubits(candidateRoutes.map((route) => route.constructionCost), budget, slack)
     return q.routeQubits + q.slackQubits
   }
-  const tooManyQubits = rows.some((row) => qubitsFor(row.slack) > MAX_QUBITS)
+  // hybrid rows keep only the best routes for QAOA, so they only fail when the slack bits alone fill the limit
+  const hybridQubitsFor = (row: ParamRow) => estimateHybridQubits(
+    candidateRoutes.map((route) => route.constructionCost), budget, Number(row.quantumPercent) / 100, MAX_QUBITS)
+  const tooManyQubits = rows.some((row) => (row.mode === 'hybrid' ? hybridQubitsFor(row).impossible : qubitsFor(row.slack) > MAX_QUBITS))
 
   const stats = useMemo(() => computeStatistics(runs, budget), [runs, budget])
   const doneCount = runs.filter((run) => run.state === 'done' || run.state === 'failed').length
@@ -369,7 +380,7 @@ export default function BatchSimulationPage() {
       {saveNotice && <p className="batch-saved-note batch-saved-note-muted" role="status">{saveNotice}</p>}
       {tooManyQubits && (
         <p className="qaoa-config-warning batch-warning" role="alert">
-          Some rows need more than {MAX_QUBITS} qubits with the selected routes (≈ {qubitsFor(true)} with slack, {qubitsFor(false)} without). Those simulations will fail; choose "No slack" or fewer routes.
+          Some rows need more than {MAX_QUBITS} qubits with the selected routes (≈ {qubitsFor(true)} with slack, {qubitsFor(false)} without). Those simulations will fail; choose "No slack", fewer routes, or turn on hybrid mode (hybrid rows that still fail need a lower quantum share).
         </p>
       )}
 
@@ -493,7 +504,7 @@ export default function BatchSimulationPage() {
           <table className="batch-table">
             <thead>
               <tr>
-                <th aria-label="Details" /><th>#</th><th>p</th><th>Budget encoding</th><th>COBYLA iterations</th><th>Shots</th><th>Seed</th>
+                <th aria-label="Details" /><th>#</th><th>p</th><th>Budget encoding</th><th>Hybrid mode</th><th>COBYLA iterations</th><th>Shots</th><th>Seed</th>
                 <th>Status</th><th>Cost</th><th>Value</th><th>Ratio</th><th>Connected</th><th>Time</th>
               </tr>
             </thead>
@@ -522,10 +533,43 @@ export default function BatchSimulationPage() {
                     <td>{i + 1}</td>
                     <td><input className={bad(wholeNumber(row.p, QAOA_LIMITS.p.min, QAOA_LIMITS.p.max) !== null)} type="number" min={QAOA_LIMITS.p.min} max={QAOA_LIMITS.p.max} value={row.p} disabled={running} aria-label={`p for simulation ${i + 1}`} onChange={(e) => updateRow(i, { p: e.target.value })} /></td>
                     <td>
-                      <select value={row.slack ? 'slack' : 'no-slack'} disabled={running} aria-label={`Budget encoding for simulation ${i + 1}`} onChange={(e) => updateRow(i, { slack: e.target.value === 'slack' })}>
+                      <select value={row.mode === 'hybrid' || row.slack ? 'slack' : 'no-slack'} disabled={running || row.mode === 'hybrid'} title={row.mode === 'hybrid' ? 'Hybrid mode always uses slack qubits' : undefined} aria-label={`Budget encoding for simulation ${i + 1}`} onChange={(e) => updateRow(i, { slack: e.target.value === 'slack' })}>
                         <option value="slack">Slack</option>
                         <option value="no-slack">No slack</option>
                       </select>
+                    </td>
+                    <td>
+                      <div className="batch-mode-cell">
+                        <label className="mode-toggle mode-toggle-compact">
+                          <input
+                            type="checkbox"
+                            role="switch"
+                            checked={row.mode === 'hybrid'}
+                            disabled={running}
+                            aria-label={`Hybrid mode for simulation ${i + 1}`}
+                            onChange={(e) => updateRow(i, { mode: e.target.checked ? 'hybrid' : 'qaoa_only' })}
+                          />
+                          <span className="mode-toggle-track" aria-hidden="true"><span className="mode-toggle-thumb" /></span>
+                          <span className="mode-toggle-text">{row.mode === 'hybrid' ? 'On' : 'Off'}</span>
+                        </label>
+                        {row.mode === 'hybrid' && (
+                          <>
+                            <input
+                              className={`batch-fraction ${bad(wholeNumber(row.quantumPercent, QUANTUM_FRACTION_LIMITS.min, QUANTUM_FRACTION_LIMITS.max) !== null)}`}
+                              type="number"
+                              min={QUANTUM_FRACTION_LIMITS.min}
+                              max={QUANTUM_FRACTION_LIMITS.max}
+                              step="5"
+                              value={row.quantumPercent}
+                              disabled={running}
+                              title="Quantum share of the budget (%)"
+                              aria-label={`Quantum share of the budget for simulation ${i + 1}, in percent`}
+                              onChange={(e) => updateRow(i, { quantumPercent: e.target.value })}
+                            />
+                            <span>%</span>
+                          </>
+                        )}
+                      </div>
                     </td>
                     <td><input className={bad(wholeNumber(row.iterations, QAOA_LIMITS.iterations.min, QAOA_LIMITS.iterations.max) !== null)} type="number" min={QAOA_LIMITS.iterations.min} max={QAOA_LIMITS.iterations.max} value={row.iterations} disabled={running} aria-label={`COBYLA iterations for simulation ${i + 1}`} onChange={(e) => updateRow(i, { iterations: e.target.value })} /></td>
                     <td><input className={bad(wholeNumber(row.shots, QAOA_LIMITS.shots.min, QAOA_LIMITS.shots.max) !== null)} type="number" min={QAOA_LIMITS.shots.min} max={QAOA_LIMITS.shots.max} value={row.shots} disabled={running} aria-label={`Shots for simulation ${i + 1}`} onChange={(e) => updateRow(i, { shots: e.target.value })} /></td>
@@ -541,10 +585,10 @@ export default function BatchSimulationPage() {
                   </tr>
                   {isOpen && run && (
                     <tr className="batch-detail-row">
-                      <td colSpan={13}>
+                      <td colSpan={14}>
                         <div className="batch-detail">
                           <div className="batch-detail-title">
-                            Simulation #{run.index} · p = {run.params.p} · {run.params.slack ? 'slack' : 'no slack'} · {run.params.iterations} COBYLA iterations · {run.params.shots} shots · seed {run.params.seed}
+                            Simulation #{run.index} · p = {run.params.p} · {describeEncoding(run.params)} · {run.params.iterations} COBYLA iterations · {run.params.shots} shots · seed {run.params.seed}
                           </div>
                           <RunDetails response={run.response} error={run.state === 'failed' ? run.error : null} valid={m?.valid} />
                         </div>

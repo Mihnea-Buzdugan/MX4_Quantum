@@ -109,9 +109,10 @@ export default function NetworkDiagram({
         </div>
       )}
       <div className="map-legend">
-        <span><i className="legend-dot legend-cyan" /> Included routes</span>
-        <span><i className="legend-dot legend-evaluating" /> Quantum-selected routes</span>
-        <span><i className="legend-dot legend-muted" /> Connectors / candidates</span>
+        <span><i className="legend-line legend-line-quantum" /> Chosen by QAOA</span>
+        <span><i className="legend-line legend-line-connector" /> Classical connector</span>
+        <span><i className="legend-line legend-line-extra" /> Extra (leftover budget)</span>
+        <span><i className="legend-line legend-line-candidate" /> Candidate</span>
       </div>
       <div className="map-controls">
         <button onClick={() => setZoom((value) => Math.min(1.25, value + .08))} aria-label="Zoom in"><Plus size={15} /></button>

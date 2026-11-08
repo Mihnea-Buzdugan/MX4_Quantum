@@ -12,8 +12,9 @@ export type RailwayPlanOptions = {
   slack: boolean // true = slack qubits for the budget, false = no slack (unbalanced penalization)
   maxiter: number // COBYLA iterations per optimiser run
   shots: number // measurements of the final QAOA circuit
-  // ---- other planner options
-  quantum_fraction: number
+  // ---- planner mode: QAOA picks the whole network, or QAOA + classical completion
+  mode: PlannerMode
+  quantum_fraction: number // hybrid only: share of the budget the QAOA stage may spend
   max_qubits: number
   seed: number
   auto_conflicts: boolean
@@ -40,18 +41,40 @@ export const QAOA_LIMITS = {
   shots: { min: 1, max: 100_000 },
 } as const
 
+export type PlannerMode = 'qaoa_only' | 'hybrid'
+
+export const QUANTUM_FRACTION_LIMITS = { min: 5, max: 100 } as const // percent of the budget
+
 export type QaoaSettings = {
   p: number
   slack: boolean
   iterations: number
   shots: number
+  // optional so runs saved before hybrid mode existed still read as qaoa_only
+  mode?: PlannerMode
+  quantumFraction?: number // 0..1, hybrid only
 }
 
-export const DEFAULT_QAOA_SETTINGS: QaoaSettings = {
+export const DEFAULT_QAOA_SETTINGS: Required<QaoaSettings> = {
   p: 1,
   slack: true,
   iterations: 300,
   shots: 2048,
+  mode: 'qaoa_only',
+  quantumFraction: 0.8,
+}
+
+export function isHybrid(settings: Pick<QaoaSettings, 'mode'> | null | undefined) {
+  return settings?.mode === 'hybrid'
+}
+
+/** "slack" / "no slack" for QAOA only; "hybrid · 80 % quantum" for hybrid (which always uses slack). */
+export function describeEncoding(settings: Pick<QaoaSettings, 'mode' | 'slack' | 'quantumFraction'>) {
+  if (isHybrid(settings)) {
+    const fraction = settings.quantumFraction ?? DEFAULT_QAOA_SETTINGS.quantumFraction
+    return `hybrid · ${Math.round(fraction * 100)}% quantum`
+  }
+  return settings.slack ? 'slack' : 'no slack'
 }
 
 // Dashboard settings -> planner option names.
@@ -61,12 +84,13 @@ export function qaoaSettingsToOptions(settings: QaoaSettings): Partial<RailwayPl
     slack: settings.slack,
     maxiter: settings.iterations,
     shots: settings.shots,
+    mode: settings.mode ?? DEFAULT_QAOA_SETTINGS.mode,
+    quantum_fraction: settings.quantumFraction ?? DEFAULT_QAOA_SETTINGS.quantumFraction,
   }
 }
 
 export const DEFAULT_PLANNER_OPTIONS: RailwayPlanOptions = {
-  ...qaoaSettingsToOptions(DEFAULT_QAOA_SETTINGS) as Pick<RailwayPlanOptions, 'qaoa_depth' | 'slack' | 'maxiter' | 'shots'>,
-  quantum_fraction: 0.8,
+  ...qaoaSettingsToOptions(DEFAULT_QAOA_SETTINGS) as Pick<RailwayPlanOptions, 'qaoa_depth' | 'slack' | 'maxiter' | 'shots' | 'mode' | 'quantum_fraction'>,
   max_qubits: 12,
   seed: 2026,
   auto_conflicts: true,

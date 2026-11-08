@@ -5,7 +5,7 @@ metadata:
   name: frontend
   namespace: mx4
 spec:
-  replicas: 1
+  # replicas: managed by the HorizontalPodAutoscaler in hpa.yaml
   selector:
     matchLabels:
       app: frontend
@@ -20,9 +20,22 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5173
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           env:
             - name: HOST
               value: "0.0.0.0"
+            # Override frontend/.env (localhost:8000) so the browser calls the API
+            # on the same origin it loaded the page from (mx4.local or the ngrok
+            # URL); the ingress sends /api to the backend.
+            - name: VITE_API_URL
+              value: ""
+            - name: VITE_RAILWAY_PLANNER_URL
+              value: /api/railway/plan
 ---
 apiVersion: v1
 kind: Service

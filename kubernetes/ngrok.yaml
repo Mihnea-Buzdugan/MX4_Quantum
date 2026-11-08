@@ -1,0 +1,87 @@
+# ngrok agent running inside the cluster. It opens a public HTTPS endpoint and
+# forwards every request to the nginx ingress controller, so the public URL
+# gets the same routing as http://mx4.local (/ -> frontend, /api -> backend).
+#
+# The authtoken lives in a Secret that is NOT committed. Create it with
+# ngrok.bat, or by hand:
+#   kubectl create secret generic ngrok-authtoken -n mx4 --from-literal=token=<YOUR_TOKEN>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ngrok-config
+  namespace: mx4
+data:
+  ngrok.yml: |
+    version: 3
+    agent:
+      # Lets `kubectl port-forward deploy/ngrok 4040:4040 -n mx4` reach the inspector.
+      web_addr: 0.0.0.0:4040
+      log: stdout
+      log_format: logfmt
+    endpoints:
+      - name: mx4
+        # Static dev domain from the ngrok dashboard. It is already listed in
+        # Django's ALLOWED_HOSTS / CSRF_TRUSTED_ORIGINS / CORS_ALLOWED_ORIGINS.
+        url: https://glitter-setback-dares.ngrok-free.dev
+        upstream:
+          # The nginx ingress controller Service (namespace nginx-ingress).
+          url: http://nginx-ingress.nginx-ingress.svc.cluster.local:80
+        traffic_policy:
+          on_http_request:
+            - actions:
+                # The ingress rule only matches host mx4.local, and Vite's
+                # allowedHosts only accepts mx4.local, so present that host.
+                - type: add-headers
+                  config:
+                    headers:
+                      host: mx4.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ngrok
+  namespace: mx4
+spec:
+  replicas: 1 # a domain can only be held by one agent at a time
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ngrok
+  template:
+    metadata:
+      labels:
+        app: ngrok
+    spec:
+      containers:
+        - name: ngrok
+          image: ngrok/ngrok:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - start
+            - --all
+            - --config
+            - /etc/ngrok/ngrok.yml
+          env:
+            - name: NGROK_AUTHTOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ngrok-authtoken
+                  key: token
+          ports:
+            - name: inspector
+              containerPort: 4040
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ngrok
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: ngrok-config

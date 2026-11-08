@@ -5,7 +5,7 @@ metadata:
   name: backend
   namespace: mx4
 spec:
-  replicas: 1
+  # replicas: managed by the HorizontalPodAutoscaler in hpa.yaml
   selector:
     matchLabels:
       app: backend
@@ -25,6 +25,12 @@ spec:
             - 0.0.0.0:8000
           ports:
             - containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           env:
             - name: DJANGO_SETTINGS_MODULE
               value: backend.settings
@@ -36,6 +42,10 @@ spec:
               value: "True"
             - name: ALLOWED_HOSTS
               value: "*"
+            # Overrides backend/.env (localhost:8001), which only works outside the
+            # cluster. load_dotenv() never overwrites variables that are already set.
+            - name: RAILWAY_PLANNER_URL
+              value: http://mx4-quantic-service:8001/railway/plan
 ---
 apiVersion: v1
 kind: Service
