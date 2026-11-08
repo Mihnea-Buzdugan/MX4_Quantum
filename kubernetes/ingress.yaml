@@ -6,6 +6,8 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/limit-rps: "10"
     nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+    # NGINX Inc controller (nginx-ingress): allow websocket upgrades to Vite (HMR).
+    nginx.org/websocket-services: "frontend"
 spec:
   ingressClassName: nginx
   rules:

@@ -1,4 +1,5 @@
 import { BarChart3, CircleCheck, CircleX, Cpu, LoaderCircle } from 'lucide-react'
+import { describeEncoding } from '../services/railwayPlanner'
 import {
   computeStatistics,
   fmt,
@@ -83,7 +84,7 @@ export default function BatchStatistics({ runs, budget, onView }: Props) {
               return (
                 <tr key={run.index}>
                   <td>{run.index}</td>
-                  <td>p={run.params.p} · {run.params.slack ? 'slack' : 'no slack'}</td>
+                  <td>p={run.params.p} · {describeEncoding(run.params)}</td>
                   <td>{q?.qubits ?? '—'}{q?.slack_qubits ? ` (${q.slack_qubits} slack)` : ''}</td>
                   <td>{c?.depth ?? '—'}</td>
                   <td>{c?.two_qubit_gates ?? '—'}</td>

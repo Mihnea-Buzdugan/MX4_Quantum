@@ -14,6 +14,9 @@ export type SavedParameters = {
   seed?: number
   execution?: string
   max_qubits?: number
+  mode?: 'qaoa_only' | 'hybrid'
+  quantum_fraction?: number // saved plan parameters (planner option name)
+  quantumFraction?: number // saved batch rows (frontend name)
 }
 
 export type SavedStatus = RailwayPlanResponse['status'] | 'error'
@@ -214,6 +217,8 @@ export function paramsOf(saved: SavedParameters | null | undefined): BatchRunPar
     slack: saved.slack ?? true,
     iterations: saved.iterations ?? 300,
     shots: saved.shots ?? 2048,
+    mode: saved.mode ?? 'qaoa_only',
+    quantumFraction: saved.quantumFraction ?? saved.quantum_fraction ?? 0.8,
     seed: saved.seed ?? 2026,
   }
 }

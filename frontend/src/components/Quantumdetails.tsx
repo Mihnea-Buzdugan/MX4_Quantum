@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, Download } from 'lucide-react'
 import type { Conflict, PathId, QuantumStats } from '../services/railwayPlannerTypes'
-import './QuantumDetails.css'
+import './Quantumdetails.css'
 import QuboMatrix from './QuboMatrix'
 import { CIRCUIT_LEFT, CIRCUIT_ROW, CIRCUIT_STEP, CIRCUIT_TOP, GATE_COLOR, GATE_LABEL, layoutGates, MAX_DRAWN_GATES, parseQasm3, qubitLabels } from '../utils/qasm'
 

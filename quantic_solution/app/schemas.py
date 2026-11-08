@@ -138,8 +138,16 @@ class Options(BaseModel):
         2048, ge=1, le=100_000, validation_alias=AliasChoices("shots", "nr_shots"),
         description="Measurements of the final QAOA circuit (alias `nr_shots`).")
 
+    # ---- planner mode
+    mode: Literal["qaoa_only", "hybrid"] = Field(
+        "qaoa_only",
+        description="qaoa_only = QAOA chooses the whole network; hybrid = QAOA chooses the most valuable "
+                    "routes within quantum_fraction of the budget, then a classical stage connects every "
+                    "city (and spends any leftover budget). Hybrid always encodes the budget with slack "
+                    "qubits and keeps only the best routes when there are more than max_qubits.")
+
     # ---- optimisation
-    quantum_fraction: float = Field(0.8, ge=0, le=1)
+    quantum_fraction: float = Field(0.8, ge=0, le=1, description="hybrid only: share of the budget QAOA may spend")
     seed: int = 2026
     max_qubits: int = Field(16, ge=2, le=20)
     restarts: int = Field(6, ge=1, le=30)

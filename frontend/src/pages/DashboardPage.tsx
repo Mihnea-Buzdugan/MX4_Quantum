@@ -7,6 +7,7 @@ import {
   CircleX,
   Construction,
   Cpu,
+  GitMerge,
   LoaderCircle,
   Network,
   Orbit,
@@ -25,7 +26,7 @@ import IntermediateLog, { type IntermediateLogEntry } from '../components/Interm
 import NetworkDiagram from '../components/NetworkDiagram'
 import QuantumDetails from '../components/Quantumdetails'
 import SimulationOverlay from '../components/SimulationOverlay'
-import { estimateQubits } from '../utils/qubits'
+import { estimateHybridQubits, estimateQubits } from '../utils/qubits'
 import { makeResponseEntries, routeName } from '../utils/planLog'
 import type { RunHistoryRecord, WorkspaceContext } from '../components/AppShell'
 import { cities, modelEvaluations, routes, startingBudget } from '../data/routes'
@@ -35,7 +36,9 @@ import {
   DEFAULT_QAOA_SETTINGS,
   planRailwayNetwork,
   QAOA_LIMITS,
+  QUANTUM_FRACTION_LIMITS,
   qaoaSettingsToOptions,
+  type PlannerMode,
   type QaoaSettings,
 } from '../services/railwayPlanner'
 import {
@@ -61,7 +64,7 @@ function isValidCost(value: string) {
 // Qubit limit the frontend sends as options.max_qubits.
 const MAX_QUBITS = DEFAULT_PLANNER_OPTIONS.max_qubits
 
-type QaoaInputs = { p: string; iterations: string; shots: string; slack: boolean }
+type QaoaInputs = { p: string; iterations: string; shots: string; slack: boolean; mode: PlannerMode; quantumPercent: string }
 
 function parseWholeNumber(value: string, min: number, max: number): number | null {
   const text = value.trim()
@@ -74,9 +77,13 @@ function parseQaoaInputs(inputs: QaoaInputs): QaoaSettings | null {
   const p = parseWholeNumber(inputs.p, QAOA_LIMITS.p.min, QAOA_LIMITS.p.max)
   const iterations = parseWholeNumber(inputs.iterations, QAOA_LIMITS.iterations.min, QAOA_LIMITS.iterations.max)
   const shots = parseWholeNumber(inputs.shots, QAOA_LIMITS.shots.min, QAOA_LIMITS.shots.max)
-  return p === null || iterations === null || shots === null
+  // the quantum share only matters in hybrid mode; QAOA-only ignores it
+  const percent = inputs.mode === 'hybrid'
+    ? parseWholeNumber(inputs.quantumPercent, QUANTUM_FRACTION_LIMITS.min, QUANTUM_FRACTION_LIMITS.max)
+    : DEFAULT_QAOA_SETTINGS.quantumFraction * 100
+  return p === null || iterations === null || shots === null || percent === null
     ? null
-    : { p, iterations, shots, slack: inputs.slack }
+    : { p, iterations, shots, slack: inputs.slack, mode: inputs.mode, quantumFraction: percent / 100 }
 }
 
 function formatNumber(value: number | null | undefined) {
@@ -101,6 +108,8 @@ export default function DashboardPage({ algorithm }: Props) {
     iterations: String(DEFAULT_QAOA_SETTINGS.iterations),
     shots: String(DEFAULT_QAOA_SETTINGS.shots),
     slack: DEFAULT_QAOA_SETTINGS.slack,
+    mode: DEFAULT_QAOA_SETTINGS.mode,
+    quantumPercent: String(Math.round(DEFAULT_QAOA_SETTINGS.quantumFraction * 100)),
   }))
 
   const algorithmName = algorithm === 'classic'
@@ -143,7 +152,22 @@ export default function DashboardPage({ algorithm }: Props) {
     () => estimateQubits(candidateRoutes.map((route) => route.constructionCost), numericBudget, qaoaInputs.slack),
     [candidateRoutes, numericBudget, qaoaInputs.slack],
   )
-  const estimatedQubits = qubitEstimate.routeQubits + qubitEstimate.slackQubits
+  const hybrid = qaoaInputs.mode === 'hybrid'
+  const quantumPercent = Number(qaoaInputs.quantumPercent)
+  const hybridEstimate = useMemo(
+    () => estimateHybridQubits(
+      candidateRoutes.map((route) => route.constructionCost),
+      numericBudget,
+      Number.isFinite(quantumPercent) ? quantumPercent / 100 : DEFAULT_QAOA_SETTINGS.quantumFraction,
+      MAX_QUBITS,
+    ),
+    [candidateRoutes, numericBudget, quantumPercent],
+  )
+  // hybrid never needs more than MAX_QUBITS: the planner keeps the best routes for QAOA
+  const estimatedQubits = hybrid
+    ? hybridEstimate.routeQubits + hybridEstimate.slackQubits
+    : qubitEstimate.routeQubits + qubitEstimate.slackQubits
+  const qubitLimitExceeded = hybrid ? hybridEstimate.impossible : estimatedQubits > MAX_QUBITS
   const canStart = isBudgetValid && selectedNodes.length >= 2 && candidateCostsValid && qaoaSettingsValid && !isRunning(runStatus)
   const resultEdges = result?.graph?.edges ?? []
   const totalCost = result?.total_cost ?? 0
@@ -202,7 +226,7 @@ export default function DashboardPage({ algorithm }: Props) {
     setRouteCosts((current) => ({ ...current, [routeId]: value }))
   }
 
-  function updateQaoaInput(field: 'p' | 'iterations' | 'shots', value: string) {
+  function updateQaoaInput(field: 'p' | 'iterations' | 'shots' | 'quantumPercent', value: string) {
     if (isRunning(runStatus)) return
     resetResults()
     setQaoaInputs((current) => ({ ...current, [field]: value }))
@@ -214,12 +238,18 @@ export default function DashboardPage({ algorithm }: Props) {
     setQaoaInputs((current) => ({ ...current, slack }))
   }
 
+  function updateMode(mode: PlannerMode) {
+    if (isRunning(runStatus)) return
+    resetResults()
+    setQaoaInputs((current) => ({ ...current, mode }))
+  }
+
   function getValidationMessage() {
     if (!isBudgetValid) return 'Enter a valid budget of zero or more.'
     if (selectedNodes.length < 2) return 'Select at least two network nodes on the map.'
     if (candidateRoutes.length === 0) return 'Check at least one route that connects two selected nodes.'
     if (!candidateCostsValid) return 'Route costs must be non-negative values with at most two decimals.'
-    if (!qaoaSettingsValid) return `QAOA settings must be whole numbers: p ${QAOA_LIMITS.p.min}–${QAOA_LIMITS.p.max}, COBYLA iterations ${QAOA_LIMITS.iterations.min}–${QAOA_LIMITS.iterations.max}, shots ${QAOA_LIMITS.shots.min}–${QAOA_LIMITS.shots.max}.`
+    if (!qaoaSettingsValid) return `QAOA settings must be whole numbers: p ${QAOA_LIMITS.p.min}–${QAOA_LIMITS.p.max}, COBYLA iterations ${QAOA_LIMITS.iterations.min}–${QAOA_LIMITS.iterations.max}, shots ${QAOA_LIMITS.shots.min}–${QAOA_LIMITS.shots.max}${hybrid ? `, quantum share ${QUANTUM_FRACTION_LIMITS.min}–${QUANTUM_FRACTION_LIMITS.max}%` : ''}.`
     if (runStatus === 'infeasible' && noValidSample) return 'QAOA found no valid connected network in its samples. Try more shots, a larger p or more COBYLA iterations.'
     if (runStatus === 'infeasible') return 'The backend could not connect this network within budget; adjust nodes, routes, or costs.'
     if (runStatus === 'pending') return 'The IBM Quantum job is still running. Its job id is in the log; resubmit with that job id to collect the result.'
@@ -372,6 +402,51 @@ export default function DashboardPage({ algorithm }: Props) {
 
       {isQuantum && (
         <section className="construction-scoreboard qaoa-config" aria-label="QAOA settings">
+          <article className={`panel score-card planner-mode ${hybrid ? 'planner-mode-on' : ''}`}>
+            <label className="mode-toggle" htmlFor="planner-hybrid">
+              <input
+                id="planner-hybrid"
+                type="checkbox"
+                role="switch"
+                checked={hybrid}
+                disabled={isRunningNow}
+                onChange={(event) => updateMode(event.target.checked ? 'hybrid' : 'qaoa_only')}
+              />
+              <span className="mode-toggle-track" aria-hidden="true"><span className="mode-toggle-thumb" /></span>
+              <span className="mode-toggle-text">
+                <strong><GitMerge size={14} /> Hybrid mode</strong>
+                <small>
+                  {hybrid
+                    ? 'QAOA picks the most valuable routes, then a classical stage connects every city and spends any leftover budget.'
+                    : 'Off: QAOA chooses the whole network on its own (QAOA only).'}
+                </small>
+              </span>
+            </label>
+            {hybrid && (
+              <div className="planner-mode-fraction">
+                <label htmlFor="planner-fraction">Quantum share of the budget</label>
+                <div className="planner-mode-fraction-input">
+                  <input
+                    id="planner-fraction"
+                    className="budget-input"
+                    type="number"
+                    min={QUANTUM_FRACTION_LIMITS.min}
+                    max={QUANTUM_FRACTION_LIMITS.max}
+                    step="5"
+                    value={qaoaInputs.quantumPercent}
+                    disabled={isRunningNow}
+                    onChange={(event) => updateQaoaInput('quantumPercent', event.target.value)}
+                  />
+                  <span>%</span>
+                </div>
+                <small>
+                  {hybridEstimate.impossible
+                    ? `The slack encoding alone needs ${hybridEstimate.slackQubits} qubits; lower the share.`
+                    : `≈ ${hybridEstimate.routeQubits} route + ${hybridEstimate.slackQubits} slack qubits${hybridEstimate.trimmed ? ` (best ${hybridEstimate.routeQubits} of ${hybridEstimate.candidateRoutes} routes)` : ''}`}
+                </small>
+              </div>
+            )}
+          </article>
           <article className="panel score-card">
             <label className="score-card-label" htmlFor="qaoa-p"><span className="panel-icon"><Atom size={15} /></span><span>QAOA layers (p)</span></label>
             <input
@@ -392,15 +467,17 @@ export default function DashboardPage({ algorithm }: Props) {
             <select
               id="qaoa-slack"
               className="budget-input"
-              value={qaoaInputs.slack ? 'slack' : 'no-slack'}
-              disabled={isRunningNow}
+              value={hybrid || qaoaInputs.slack ? 'slack' : 'no-slack'}
+              disabled={isRunningNow || hybrid}
               onChange={(event) => updateSlack(event.target.value === 'slack')}
             >
               <option value="slack">Slack</option>
               <option value="no-slack">No slack</option>
             </select>
             <small>
-              {qaoaInputs.slack
+              {hybrid
+                ? 'Hybrid always uses slack qubits for the quantum budget'
+                : qaoaInputs.slack
                 ? `Exact budget limit · ≈ ${qubitEstimate.routeQubits} route + ${qubitEstimate.slackQubits} slack qubits`
                 : `Penalty only, no extra qubits · ≈ ${qubitEstimate.routeQubits} qubits`}
             </small>
@@ -435,10 +512,10 @@ export default function DashboardPage({ algorithm }: Props) {
             />
             <small>Measurements of the final circuit{algorithm === 'quantum-hardware' ? ' (also on IBM hardware)' : ''}</small>
           </article>
-          {estimatedQubits > MAX_QUBITS && (
+          {!hybrid && qubitLimitExceeded && (
             <p className="qaoa-config-warning" role="alert">
               ≈ {estimatedQubits} qubits needed, but the planner allows {MAX_QUBITS}.
-              {qaoaInputs.slack && qubitEstimate.routeQubits <= MAX_QUBITS ? ' Choose "No slack" or use fewer routes.' : ' Use fewer candidate routes.'}
+              {qaoaInputs.slack && qubitEstimate.routeQubits <= MAX_QUBITS ? ' Choose "No slack", use fewer routes, or turn on hybrid mode.' : ' Use fewer candidate routes or turn on hybrid mode.'}
             </p>
           )}
         </section>

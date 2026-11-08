@@ -10,6 +10,7 @@ import {
   type RunMetrics,
 } from './batchStats'
 import { makeResponseEntries, routeName } from './planLog'
+import { describeEncoding } from '../services/railwayPlanner'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { CircuitDiagram } from '../components/Quantumdetails'
@@ -462,10 +463,10 @@ export async function buildBatchReport(
     autoTable(doc, {
       ...tableStyle,
       startY: y,
-      head: [['p', 'Slack', 'COBYLA it.', 'Shots', 'Runs', 'Valid', 'Optimum', 'Approx. ratio', 'Connected rate', 'Runtime (s)']],
+      head: [['p', 'Encoding', 'COBYLA it.', 'Shots', 'Runs', 'Valid', 'Optimum', 'Approx. ratio', 'Connected rate', 'Runtime (s)']],
       body: stats.groups.map((g) => [
         String(g.params.p),
-        g.params.slack ? 'slack' : 'no slack',
+        describeEncoding(g.params),
         String(g.params.iterations),
         String(g.params.shots),
         String(g.runs),
@@ -486,13 +487,13 @@ export async function buildBatchReport(
     ...tableStyle,
     startY: y,
     styles: { ...tableStyle.styles, fontSize: 7 },
-    head: [['#', 'p', 'Slack', 'It.', 'Shots', 'Seed', 'Status', 'Cost', 'Value', 'Optimum', 'Ratio', 'Valid rate', 'Conn. rate', 'Qubits', 'Time (s)']],
+    head: [['#', 'p', 'Encoding', 'It.', 'Shots', 'Seed', 'Status', 'Cost', 'Value', 'Optimum', 'Ratio', 'Valid rate', 'Conn. rate', 'Qubits', 'Time (s)']],
     body: runs.map((run) => {
       const m = run.state === 'done' ? toMetrics(run, setup.budget) : null
       return [
         String(run.index),
         String(run.params.p),
-        run.params.slack ? 'yes' : 'no',
+        describeEncoding(run.params),
         String(run.params.iterations),
         String(run.params.shots),
         String(run.params.seed),
@@ -539,14 +540,14 @@ export async function buildBatchReport(
       ...tableStyle,
       startY: y,
       styles: { ...tableStyle.styles, fontSize: 7 },
-      head: [['#', 'p', 'Slack', 'Qubits', 'Depth', '2q gates', 'Gate counts', 'QUBO lin./quad.', 'QUBO energy range', 'Expected energy']],
+      head: [['#', 'p', 'Encoding', 'Qubits', 'Depth', '2q gates', 'Gate counts', 'QUBO lin./quad.', 'QUBO energy range', 'Expected energy']],
       body: finished.map((run) => {
         const q = run.response?.quantum
         const c = q?.circuit
         return [
           String(run.index),
           String(run.params.p),
-          run.params.slack ? 'yes' : 'no',
+          describeEncoding(run.params),
           q?.qubits != null ? `${q.qubits}${q.slack_qubits ? ` (${q.slack_qubits} slack)` : ''}` : '-',
           c?.depth != null ? String(c.depth) : '-',
           c?.two_qubit_gates != null ? String(c.two_qubit_gates) : '-',
@@ -573,7 +574,7 @@ export async function buildBatchReport(
     doc.text(`Simulation #${run.index}`, 14, 8.5)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(8.5)
-    doc.text(ascii(`p = ${run.params.p} | ${run.params.slack ? 'slack' : 'no slack'} | ${run.params.iterations} COBYLA iterations | ${run.params.shots} shots | seed ${run.params.seed} | ${m.valid ? 'valid plan' : response.status}`), 14, 14)
+    doc.text(ascii(`p = ${run.params.p} | ${describeEncoding(run.params)} | ${run.params.iterations} COBYLA iterations | ${run.params.shots} shots | seed ${run.params.seed} | ${m.valid ? 'valid plan' : response.status}`), 14, 14)
     let sy = 26
 
     sy = subheading(doc, 'Intermediate values', sy)

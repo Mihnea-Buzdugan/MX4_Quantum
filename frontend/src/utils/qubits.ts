@@ -23,3 +23,22 @@ export function estimateQubits(costs: number[], budget: number, slack: boolean) 
   if (sum < bound) slackQubits += 1
   return { routeQubits, slackQubits }
 }
+
+// Hybrid mode (run_quantum_stage in the planner): QAOA only sees the routes that fit in
+// quantum_fraction × budget, always with slack qubits for that quantum budget, and keeps the best
+// value-per-cost routes when there are more than max_qubits − slack. It is never blocked by the
+// route count; it only fails when the slack encoding alone needs max_qubits or more.
+export function estimateHybridQubits(costs: number[], budget: number, fraction: number, maxQubits: number) {
+  const quantumBudget = fraction * budget
+  const fitting = Number.isFinite(quantumBudget) ? costs.filter((cost) => cost <= quantumBudget + 1e-9) : costs
+  const { slackQubits } = estimateQubits(fitting.length ? fitting : [0], quantumBudget, true)
+  const room = maxQubits - slackQubits
+  const routeQubits = Math.max(0, Math.min(fitting.length, room))
+  return {
+    routeQubits,
+    slackQubits,
+    candidateRoutes: fitting.length,
+    trimmed: fitting.length > routeQubits && room >= 1,
+    impossible: room < 1,
+  }
+}

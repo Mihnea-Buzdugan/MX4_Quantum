@@ -78,6 +78,8 @@ SAVED_PARAMETERS = {
     "seed": "seed",
     "execution": "execution",
     "max_qubits": "max_qubits",
+    "mode": "mode",
+    "quantum_fraction": "quantum_fraction",
 }
 
 

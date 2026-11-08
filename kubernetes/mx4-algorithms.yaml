@@ -5,7 +5,7 @@ metadata:
   name: mx4-quantic
   namespace: mx4
 spec:
-  replicas: 1
+  # replicas: managed by the HorizontalPodAutoscaler in hpa.yaml
   selector:
     matchLabels:
       app: mx4-quantic
@@ -14,12 +14,24 @@ spec:
       labels:
         app: mx4-quantic
     spec:
+      # Let an in-flight solve finish before a scaled-down pod is killed.
+      terminationGracePeriodSeconds: 600
       containers:
         - name: mx4-quantic
           image: mx4-quantic:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8001
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
 
 ---
 apiVersion: v1
@@ -34,42 +46,4 @@ spec:
     - protocol: TCP
       port: 8001
       targetPort: 8001
-  type: ClusterIP
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mx4-classic
-  namespace: mx4
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mx4-classic
-  template:
-    metadata:
-      labels:
-        app: mx4-classic
-    spec:
-      containers:
-        - name: mx4-classic
-          image: mx4-classic:latest
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 8002
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mx4-classic-service
-  namespace: mx4
-spec:
-  selector:
-    app: mx4-classic
-  ports:
-    - protocol: TCP
-      port: 8002
-      targetPort: 8002
   type: ClusterIP

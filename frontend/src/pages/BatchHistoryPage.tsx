@@ -20,6 +20,7 @@ import RunDetails from '../components/RunDetails'
 import { routes } from '../data/routes'
 import { deleteBatch, getBatch, paramsOf, savedRunResult, type BatchDetail } from '../services/history'
 import { computeStatistics, fmt, pct, toMetrics, type BatchRunResult } from '../utils/batchStats'
+import { describeEncoding } from '../services/railwayPlanner'
 import { formatDuration, formatTimestamp } from '../utils/historyFormat'
 
 // A saved batch, reopened from the run history: every run with its details, the statistics and the PDF.
@@ -212,7 +213,7 @@ export default function BatchHistoryPage() {
                       </td>
                       <td>{run.index}</td>
                       <td>{run.params.p}</td>
-                      <td>{run.params.slack ? 'Slack' : 'No slack'}</td>
+                      <td>{describeEncoding(run.params)}</td>
                       <td>{run.params.iterations}</td>
                       <td>{run.params.shots}</td>
                       <td>{run.params.seed}</td>
@@ -229,7 +230,7 @@ export default function BatchHistoryPage() {
                         <td colSpan={14}>
                           <div className="batch-detail">
                             <div className="batch-detail-title">
-                              Simulation #{run.index} · p = {run.params.p} · {run.params.slack ? 'slack' : 'no slack'} · {run.params.iterations} COBYLA iterations · {run.params.shots} shots · seed {run.params.seed}
+                              Simulation #{run.index} · p = {run.params.p} · {describeEncoding(run.params)} · {run.params.iterations} COBYLA iterations · {run.params.shots} shots · seed {run.params.seed}
                             </div>
                             <RunDetails response={run.response} error={run.state === 'failed' ? run.error : null} valid={m?.valid} />
                           </div>

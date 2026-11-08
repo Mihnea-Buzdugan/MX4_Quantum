@@ -17,7 +17,9 @@ export function describeParameters(parameters: SavedParameters | null | undefine
   if (!parameters) return '—'
   const parts = [
     parameters.p != null ? `p = ${parameters.p}` : undefined,
-    parameters.slack != null ? (parameters.slack ? 'slack' : 'no slack') : undefined,
+    parameters.mode === 'hybrid'
+      ? `hybrid · ${Math.round((parameters.quantum_fraction ?? 0.8) * 100)}% quantum`
+      : parameters.slack != null ? (parameters.slack ? 'slack' : 'no slack') : undefined,
     parameters.iterations != null ? `${parameters.iterations} it.` : undefined,
     parameters.shots != null ? `${parameters.shots} shots` : undefined,
     parameters.seed != null ? `seed ${parameters.seed}` : undefined,

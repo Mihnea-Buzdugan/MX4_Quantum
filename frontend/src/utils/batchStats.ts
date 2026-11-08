@@ -1,5 +1,5 @@
 import type { RailwayPlanResponse } from '../services/railwayPlannerTypes'
-import type { QaoaSettings } from '../services/railwayPlanner'
+import { describeEncoding, type QaoaSettings } from '../services/railwayPlanner'
 
 // One simulation of a batch: its parameters plus what the planner returned.
 export type BatchRunParams = QaoaSettings & { seed: number }
@@ -77,7 +77,7 @@ export type BatchStatistics = {
 }
 
 export function configKey(params: Omit<BatchRunParams, 'seed'>) {
-  return `p=${params.p} · ${params.slack ? 'slack' : 'no slack'} · ${params.iterations} it · ${params.shots} shots`
+  return `p=${params.p} · ${describeEncoding(params)} · ${params.iterations} it · ${params.shots} shots`
 }
 
 function num(value: unknown): number | null {
@@ -91,18 +91,24 @@ export function toMetrics(run: BatchRunResult, budget: number): RunMetrics {
     && r.connected
     && typeof r.total_cost === 'number'
     && r.total_cost <= budget + 1e-9
+  // Hybrid: the quantum statistics describe only the QAOA stage (its routes and quantum budget),
+  // so "optimum" and "ratio" compare QAOA's best sample with the exact optimum of that stage.
+  const hybrid = q?.mode === 'hybrid'
+  const stageBest = num(q?.best_sampled_value)
+  const stageOptimum = num(q?.exact_optimum_value)
+  const stageRatio = stageBest !== null && stageOptimum !== null && stageOptimum > 0 ? stageBest / stageOptimum : null
   return {
     index: run.index,
     params: run.params,
     configKey: configKey(run.params),
     status: run.state === 'failed' ? 'error' : r?.status ?? run.state,
     valid,
-    optimumFound: q?.optimum_found === true,
+    optimumFound: hybrid ? stageRatio !== null && stageRatio >= 1 - 1e-9 : q?.optimum_found === true,
     totalCost: num(r?.total_cost),
     totalValue: num(r?.total_value),
-    optimumValue: num(q?.exact_optimum_value),
-    approximationRatio: num(q?.approximation_ratio),
-    validSampleRate: num(q?.valid_sample_rate),
+    optimumValue: hybrid ? null : num(q?.exact_optimum_value),
+    approximationRatio: hybrid ? stageRatio : num(q?.approximation_ratio),
+    validSampleRate: hybrid ? num(q?.feasible_sample_rate) : num(q?.valid_sample_rate),
     connectedSampleRate: num(q?.connected_sample_rate),
     pOptimum: num(q?.p_optimum_qaoa),
     qubits: num(q?.qubits),
@@ -141,10 +147,10 @@ export function computeStatistics(runs: BatchRunResult[], budget: number): Batch
     byConfig.set(m.configKey, [...(byConfig.get(m.configKey) ?? []), m])
   }
   const groups: GroupStats[] = [...byConfig.entries()].map(([key, items]) => {
-    const { p, slack, iterations, shots } = items[0].params
+    const { p, slack, mode, quantumFraction, iterations, shots } = items[0].params
     return {
       configKey: key,
-      params: { p, slack, iterations, shots },
+      params: { p, slack, mode, quantumFraction, iterations, shots },
       runs: items.length,
       successRate: rate(items.map((m) => m.valid)),
       optimumRate: rate(items.map((m) => m.optimumFound)),
