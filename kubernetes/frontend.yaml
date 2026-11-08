@@ -5,7 +5,8 @@ metadata:
   name: frontend
   namespace: mx4
 spec:
-  # replicas: managed by the HorizontalPodAutoscaler in hpa.yaml
+  # Fixed at one pod: the frontend is not autoscaled (no HPA in hpa.yaml).
+  replicas: 1
   selector:
     matchLabels:
       app: frontend

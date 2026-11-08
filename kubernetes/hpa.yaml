@@ -1,26 +1,8 @@
 # Horizontal Pod Autoscalers for the stateless mx4 services.
 # They scale on CPU usage relative to each container's CPU *request*, so they
 # need metrics-server in the cluster (check with: kubectl top pods -n mx4).
-# Not autoscaled: redis (holds data) and ngrok (one agent per domain).
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: frontend
-  namespace: mx4
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: frontend
-  minReplicas: 1
-  maxReplicas: 3
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
+# Not autoscaled: frontend (fixed at 1 replica), redis (holds data) and
+# ngrok (one agent per domain).
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
